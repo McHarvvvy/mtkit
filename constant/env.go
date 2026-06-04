@@ -1,10 +1,10 @@
 package constant
 
 const (
-	// EnvMTMode 指定 test 进程运行模式。
-	EnvMTMode = "MT_MODE"
-	// EnvMTRuntime 指定 runtime 信息文件路径。
-	EnvMTRuntime = "MT_RUNTIME"
+	// EnvMTKitConfigPath 指定 mtkit 配置文件路径。
+	EnvMTKitConfigPath = "MTKIT_CONFIG_PATH"
+	// EnvMTKitRunMode 指定 test 进程运行模式。
+	EnvMTKitRunMode = "MTKIT_RUN_MODE"
 
 	// MTModeDaemon 表示守护进程模式。
 	MTModeDaemon = "daemon"

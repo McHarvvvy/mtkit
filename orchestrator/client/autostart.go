@@ -153,8 +153,7 @@ func (c *Client) buildDaemonCommand(ctx context.Context) (*exec.Cmd, error) {
 	}
 	cmd := exec.CommandContext(ctx, runner, "-test.run=^$")
 	cmd.Env = mergeEnv(os.Environ(), map[string]string{
-		mtconstant.EnvMTMode:    mtconstant.MTModeDaemon,
-		mtconstant.EnvMTRuntime: c.cfg.RuntimePath,
+		mtconstant.EnvMTKitRunMode: mtconstant.MTModeDaemon,
 	})
 	return cmd, nil
 }

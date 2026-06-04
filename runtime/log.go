@@ -13,7 +13,12 @@ func OpenAppLogFile(runtimePath string) (*os.File, error) {
 
 // OpenDaemonLogFile 打开 daemon.log 文件并确保父目录存在。
 func OpenDaemonLogFile(runtimePath string) (*os.File, error) {
-	return openLogFile(DaemonLogPath(runtimePath))
+	return OpenLogFile(DaemonLogPath(runtimePath))
+}
+
+// OpenLogFile 打开指定日志文件并确保父目录存在。
+func OpenLogFile(logPath string) (*os.File, error) {
+	return openLogFile(logPath)
 }
 
 // AttachCmdOutput 将进程标准输出与错误输出都重定向到同一文件。

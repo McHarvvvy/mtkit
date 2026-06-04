@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package faked.test.echo.v1;
+
+option go_package = ".;testpb";
+
+// Echo 是 faked acceptance test 用的最小 gRPC service。
+// 仅用于驱动 faked 的命中/未命中/状态隔离/并发等行为，不承担任何业务语义。
+service Echo {
+  // Ping route_key 从 PingReq.key 抽取，用于覆盖"按 request 字段构造 route_key"。
+  rpc Ping(PingReq) returns (PingRes);
+  // Whoami 没有请求字段，route_key 用 routekey.Static()，覆盖"全局静态 key"分支。
+  rpc Whoami(WhoamiReq) returns (WhoamiRes);
+}
+
+message PingReq {
+  string key = 1;
+  string payload = 2;
+}
+
+message PingRes {
+  int32 code = 1;
+  string msg = 2;
+  string echo = 3;
+}
+
+message WhoamiReq {}
+
+message WhoamiRes {
+  string id = 1;
+}

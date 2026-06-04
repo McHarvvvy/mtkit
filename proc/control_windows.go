@@ -1,6 +1,6 @@
 //go:build windows
 
-package sut
+package proc
 
 import (
 	"fmt"
@@ -13,18 +13,16 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-var sutJobStore sync.Map // map[int]windows.Handle
+var jobStore sync.Map // map[int]windows.Handle
 
-func prepareSUTCommand(cmd *exec.Cmd) error {
+func PrepareCommand(cmd *exec.Cmd) error {
 	return nil
 }
 
-func afterSUTStart(cmd *exec.Cmd) error {
+func AfterStart(cmd *exec.Cmd) error {
 	if cmd == nil || cmd.Process == nil {
-		return fmt.Errorf("sut process is nil")
+		return fmt.Errorf("process is nil")
 	}
-	// Windows 下使用 JobObject 兜底管理子进程链，
-	// 避免仅 Kill 主进程后遗留后台子进程。
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
 		return err
@@ -50,23 +48,21 @@ func afterSUTStart(cmd *exec.Cmd) error {
 		_ = windows.CloseHandle(job)
 		return err
 	}
-	sutJobStore.Store(cmd.Process.Pid, job)
+	jobStore.Store(cmd.Process.Pid, job)
 	return nil
 }
 
-func terminateSUTProcess(cmd *exec.Cmd) error {
+func TerminateProcessTree(cmd *exec.Cmd) error {
 	if cmd == nil || cmd.Process == nil {
 		return nil
 	}
 	pid := cmd.Process.Pid
-	// 先终止 JobObject，确保其下全部进程统一退出。
-	if jh, ok := sutJobStore.LoadAndDelete(pid); ok {
+	if jh, ok := jobStore.LoadAndDelete(pid); ok {
 		if job, ok2 := jh.(windows.Handle); ok2 {
 			_ = windows.TerminateJobObject(job, 1)
 			_ = windows.CloseHandle(job)
 		}
 	}
-	// 再用 taskkill /T 做系统级兜底，覆盖非 JobObject 场景。
 	_ = exec.Command("taskkill", "/T", "/F", "/PID", strconv.Itoa(pid)).Run()
 	if err := cmd.Process.Kill(); err != nil {
 		if err == syscall.ESRCH {
@@ -76,11 +72,11 @@ func terminateSUTProcess(cmd *exec.Cmd) error {
 	return nil
 }
 
-func releaseSUTProcess(cmd *exec.Cmd) {
+func ReleaseProcess(cmd *exec.Cmd) {
 	if cmd == nil || cmd.Process == nil {
 		return
 	}
-	if jh, ok := sutJobStore.LoadAndDelete(cmd.Process.Pid); ok {
+	if jh, ok := jobStore.LoadAndDelete(cmd.Process.Pid); ok {
 		if job, ok2 := jh.(windows.Handle); ok2 {
 			_ = windows.CloseHandle(job)
 		}

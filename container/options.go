@@ -16,6 +16,11 @@ type ContainerRegistration struct {
 	Start func(ctx context.Context) (testcontainers.Container, error)
 	// Init 在所有容器启动后执行（可选），可用于建库、写种子数据等初始化操作。
 	Init func(ctx context.Context) error
+	// SUTEnv 在容器启动后由 daemon 调用（可选），返回该容器要注入 SUT 的环境变量
+	// （连接串等）。c 是本注册项已启动的容器句柄（mtkit 按 Name 索引传入），
+	// 用 c.Host(ctx) / c.MappedPort(ctx, "3306/tcp") 取宿主映射地址——映射端口是
+	// 启动前唯一不可知的量，故连接串组装放在这个启动后回调里（连接串领域知识就近留在注册代码）。
+	SUTEnv func(ctx context.Context, c testcontainers.Container) (map[string]string, error)
 }
 
 // ValidateRegistrations 校验容器注册项集合：非空、名称非空、Start 非空、名称不重复。

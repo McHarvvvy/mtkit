@@ -16,6 +16,7 @@ import (
 
 	mtconstant "github.com/McHarvvvy/mtkit/constant"
 	"github.com/McHarvvvy/mtkit/container"
+	mtfaked "github.com/McHarvvvy/mtkit/faked"
 	"github.com/McHarvvvy/mtkit/orchestrator/protocol"
 	mtruntime "github.com/McHarvvvy/mtkit/runtime"
 	"github.com/McHarvvvy/mtkit/sut"
@@ -31,10 +32,16 @@ type Config struct {
 	Project string
 	// RuntimePath 指定 runtime 发现文件路径，供客户端发现 daemon。
 	RuntimePath string
+	RuntimeDir  string
 	// IdleTTL 指定 daemon 在无活跃租约时的自动退出时间。
 	IdleTTL time.Duration
+	// Faked 定义 faked 内嵌引擎配置。
+	Faked mtfaked.Config
+	// FakedEnabled 指定是否启用内嵌 faked 引擎。
+	FakedEnabled bool
 	// SUT 定义被测服务启动计划与生命周期策略。
-	SUT sut.SUTBootPlan
+	SUTConfig sut.Config
+	SUT       sut.SUTBootPlan
 }
 
 // Daemon 负责管理 mtkit 测试基础设施（容器 / SUT / 租约）的生命周期。
@@ -46,6 +53,10 @@ type Daemon struct {
 	httpServer  *http.Server
 	startedAt   time.Time
 	runtimePath string
+	runtimeInfo mtruntime.RuntimeInfo // Start 写入的基线，faked/sut env 就绪后追加段重写
+	faked       *mtfaked.Engine       // nil 表示 faked 未启用
+	fakedEnv    map[string]string     // ensureFakedStarted 暂存的 faked 注入 env
+	sutEnvReady bool                  // prepareSUTEnv 是否已组装并落盘（幂等）
 	sut         *sut.Manager
 
 	startMu      sync.Mutex
@@ -81,6 +92,20 @@ func New(cfg Config, regs []container.ContainerRegistration) (*Daemon, error) {
 	if err != nil {
 		return nil, err
 	}
+	var fakedEngine *mtfaked.Engine
+	if cfg.FakedEnabled {
+		fakedEngine, err = mtfaked.New(cfg.Faked)
+		if err != nil {
+			return nil, err
+		}
+	}
+	// 注入 SUT 的 env（容器 + faked 连接信息）在容器/引擎 Start 后才已知，故 sutInput 此处不含——
+	// 由 prepareSUTEnv 组装后经 sut.Manager.SetInjectEnv 在 SUT 启动前填入（见 lifecycle.go）。
+	sutInput := sut.StartSUTInput{
+		Project:     cfg.Project,
+		RuntimePath: cfg.RuntimePath,
+		RuntimeDir:  cfg.RuntimeDir,
+	}
 	return &Daemon{
 		cfg:         cfg,
 		regs:        regs,
@@ -88,7 +113,8 @@ func New(cfg Config, regs []container.ContainerRegistration) (*Daemon, error) {
 		store:       newLeaseStore(),
 		startedAt:   time.Now(),
 		runtimePath: cfg.RuntimePath,
-		sut:         sut.NewManager(cfg.SUT),
+		faked:       fakedEngine,
+		sut:         sut.NewManager(cfg.SUTConfig, cfg.SUT, sutInput),
 		done:        make(chan struct{}),
 	}, nil
 }
@@ -108,6 +134,11 @@ func (d *Daemon) Start(ctx context.Context) error {
 
 	mux := http.NewServeMux()
 	d.registerLeaseRoutes(mux)
+	if d.faked != nil {
+		// faked 内嵌：rule 注册 handler 挂 daemon 主 mux（与 lease 共用端口），必须在 Serve 之前。
+		// 无鉴权——与原独立 faked control 一致（仅面向本机测试进程）。
+		d.faked.RegisterControl(mux)
+	}
 	// 段3 预留：fixtured 协调路由在此追加，与 lease 共用同一 mux / 端口 / 鉴权：
 	//   d.fixtured.RegisterRoutes(mux, d.withAuth)
 
@@ -117,13 +148,13 @@ func (d *Daemon) Start(ctx context.Context) error {
 	}
 	d.httpServer = &http.Server{Handler: mux}
 
-	info := mtruntime.RuntimeInfo{
+	d.runtimeInfo = mtruntime.RuntimeInfo{
 		Addr:      ln.Addr().String(),
 		Token:     d.cfg.Token,
 		PID:       os.Getpid(),
 		StartedAt: d.startedAt,
 	}
-	if err = mtruntime.Write(d.runtimePath, info); err != nil {
+	if err = mtruntime.Write(d.runtimePath, d.runtimeInfo); err != nil {
 		_ = ln.Close()
 		return err
 	}
@@ -187,6 +218,18 @@ func (d *Daemon) handleAcquire(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, protocol.ErrCodeInternal, err.Error())
 		return
 	}
+	fakedStart := time.Now()
+	if err := d.ensureFakedStarted(r.Context()); err != nil {
+		log.Printf("mtkit acquire ensure faked failed cost=%s err=%v", time.Since(fakedStart), err)
+		writeError(w, http.StatusInternalServerError, protocol.ErrCodeInternal, err.Error())
+		return
+	}
+	// 容器 + faked 就绪后组装注入 SUT 的全部 env（容器连接 + faked 连接），并落盘 sut_env。
+	if err := d.prepareSUTEnv(r.Context()); err != nil {
+		log.Printf("mtkit acquire prepare sut env failed err=%v", err)
+		writeError(w, http.StatusInternalServerError, protocol.ErrCodeInternal, err.Error())
+		return
+	}
 	appStart := time.Now()
 	if err := d.ensureSUTStarted(r.Context()); err != nil {
 		log.Printf("mtkit acquire ensure sut failed cost=%s err=%v", time.Since(appStart), err)
@@ -241,17 +284,24 @@ func (d *Daemon) handleState(w http.ResponseWriter, r *http.Request) {
 	}
 	active := d.store.activeCount(time.Now())
 	sutState := d.sut.Snapshot()
+	var fakedState mtfaked.State
+	if d.faked != nil {
+		fakedState = d.faked.Snapshot()
+	}
 	state := protocol.StateResp{
-		InfraReady:    d.bundle.Started(),
-		ActiveLeases:  active,
-		Containers:    d.bundle.Containers(),
-		StartedAt:     d.startedAt,
-		IdleTTLSecond: int(d.cfg.IdleTTL.Seconds()),
-		AppReady:      sutState.Ready,
-		AppPID:        sutState.PID,
-		AppStartedAt:  sutState.StartedAt,
-		AppRestarts:   sutState.RestartCount,
-		AppLastError:  sutState.LastError,
+		InfraReady:     d.bundle.Started(),
+		ActiveLeases:   active,
+		Containers:     d.bundle.Containers(),
+		StartedAt:      d.startedAt,
+		IdleTTLSecond:  int(d.cfg.IdleTTL.Seconds()),
+		AppReady:       sutState.Ready,
+		AppPID:         sutState.PID,
+		AppStartedAt:   sutState.StartedAt,
+		AppRestarts:    sutState.RestartCount,
+		AppLastError:   sutState.LastError,
+		// faked 内嵌：随 daemon 生命周期，无独立 PID / 重启计数 / 进程级错误。
+		FakedReady:     fakedState.Ready,
+		FakedStartedAt: fakedState.StartedAt,
 	}
 	writeJSON(w, http.StatusOK, state)
 }
@@ -307,9 +357,10 @@ func (d *Daemon) loopReaper() {
 func (d *Daemon) shutdownServer(ctx context.Context) {
 	d.shutdownOnce.Do(func() {
 		close(d.done)
-		// 先停 SUT 再停容器：
+		// 先停 SUT / faked 再停容器：
 		// 避免 SUT 在依赖容器先下线后出现大量无意义报错。
 		_ = d.stopSUTOnly(ctx)
+		_ = d.stopFakedOnly(ctx)
 		_ = d.stopContainersOnly(ctx)
 		if d.httpServer != nil {
 			shutdownCtx, cancel := context.WithTimeout(ctx, 3*time.Second)

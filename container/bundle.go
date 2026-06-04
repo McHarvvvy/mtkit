@@ -92,6 +92,46 @@ func (b *Bundle) StopAll(ctx context.Context) error {
 	return nil
 }
 
+// SUTEnv 收集各容器注册项 SUTEnv 回调产出的环境变量（容器连接信息）。
+//
+// 在容器启动后调用：按 Name 取出对应容器句柄传给各自的 SUTEnv 回调，合并所有产物。
+// 不同容器贡献同名 env key 视为开发期错误，直接报错（避免静默覆盖）。
+func (b *Bundle) SUTEnv(ctx context.Context) (map[string]string, error) {
+	b.mu.Lock()
+	if !b.started {
+		b.mu.Unlock()
+		return nil, fmt.Errorf("bundle not started")
+	}
+	type job struct {
+		reg ContainerRegistration
+		ctr testcontainers.Container
+	}
+	jobs := make([]job, 0, len(b.regs))
+	for _, reg := range b.regs {
+		if reg.SUTEnv == nil {
+			continue
+		}
+		jobs = append(jobs, job{reg: reg, ctr: b.containerBy[reg.Name]})
+	}
+	b.mu.Unlock()
+
+	// 回调可能做 docker 调用（MappedPort），故不持锁执行。
+	out := make(map[string]string)
+	for _, j := range jobs {
+		env, err := j.reg.SUTEnv(ctx, j.ctr)
+		if err != nil {
+			return nil, fmt.Errorf("build sut env for %s: %w", j.reg.Name, err)
+		}
+		for k, v := range env {
+			if _, dup := out[k]; dup {
+				return nil, fmt.Errorf("duplicate sut env key %q (from container %s)", k, j.reg.Name)
+			}
+			out[k] = v
+		}
+	}
+	return out, nil
+}
+
 // Started 返回当前容器资源是否已启动。
 func (b *Bundle) Started() bool {
 	b.mu.Lock()

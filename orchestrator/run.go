@@ -5,12 +5,12 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
 	"github.com/McHarvvvy/mtkit/constant"
 	"github.com/McHarvvvy/mtkit/container"
+	mtfaked "github.com/McHarvvvy/mtkit/faked"
 	"github.com/McHarvvvy/mtkit/orchestrator/client"
 	"github.com/McHarvvvy/mtkit/sut"
 )
@@ -27,18 +27,22 @@ type RegisterContainersFunc func(ctx context.Context) ([]container.ContainerRegi
 type RunConfig struct {
 	Project             string
 	RuntimePath         string
+	RuntimeDir          string
 	DaemonAddr          string
 	DaemonToken         string
 	DaemonIdleTTL       time.Duration
 	ClientHTTPTimeout   time.Duration
+	SUTConfig           sut.Config
 	SUT                 sut.SUTBootPlan
+	Faked               mtfaked.Config
+	FakedEnabled        bool
 	RegisterContainers  RegisterContainersFunc
 	ContainerRegistries []container.ContainerRegistration
 }
 
-// Run 按 MT_MODE 分流到 daemon 模式或 client 模式。
+// Run 按 MTKIT_RUN_MODE 分流到 daemon 模式或 client 模式。
 func Run(cfg RunConfig, m Runnable) int {
-	if os.Getenv(constant.EnvMTMode) == constant.MTModeDaemon {
+	if os.Getenv(constant.EnvMTKitRunMode) == constant.MTModeDaemon {
 		return runDaemonMode(cfg)
 	}
 	return runClientMode(cfg, m)
@@ -66,11 +70,12 @@ func runDaemonMode(cfg RunConfig) int {
 		Token:       cfg.DaemonToken,
 		Project:     cfg.Project,
 		RuntimePath: cfg.RuntimePath,
-		IdleTTL:     cfg.DaemonIdleTTL,
-		SUT:         cfg.SUT,
-	}
-	if v := strings.TrimSpace(os.Getenv(constant.EnvMTRuntime)); v != "" {
-		dcfg.RuntimePath = v
+		RuntimeDir:  cfg.RuntimeDir,
+		IdleTTL:      cfg.DaemonIdleTTL,
+		Faked:        cfg.Faked,
+		FakedEnabled: cfg.FakedEnabled,
+		SUTConfig:    cfg.SUTConfig,
+		SUT:          cfg.SUT,
 	}
 
 	d, err := New(dcfg, regs)

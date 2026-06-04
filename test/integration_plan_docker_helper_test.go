@@ -226,10 +226,10 @@ func (s sutEnvVerifySUT) GetCommand(ctx context.Context, _ mtkit.StartSUTInput) 
 	}
 	cmd := exec.Command(os.Args[0], "-test.run=TestHelperSUTEnvVerify")
 	cmd.Env = buildHelperEnv(map[string]string{
-		"MT_MODE":             "",       // 清除 daemon 模式标记，让 helper 进程正常执行测试函数
-		"MT_HELPER_PROCESS":   "1",
-		"MT_HELPER_ENV_FILE":  s.envFile,
-		"TEST_REDIS_ADDR":     redisAddr,
+		"MT_MODE":            "", // 清除 daemon 模式标记，让 helper 进程正常执行测试函数
+		"MT_HELPER_PROCESS":  "1",
+		"MT_HELPER_ENV_FILE": s.envFile,
+		"TEST_REDIS_ADDR":    redisAddr,
 	})
 	cmd.Dir = os.TempDir()
 	return cmd, nil
