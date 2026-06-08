@@ -41,8 +41,8 @@ import (
 	"github.com/McHarvvvy/mtkit/faked"
 	fakedgrpc "github.com/McHarvvvy/mtkit/faked/grpc"
 	fakedhttp "github.com/McHarvvvy/mtkit/faked/http"
-	"github.com/McHarvvvy/mtkit/faked/test/internal/testendpoint"
-	"github.com/McHarvvvy/mtkit/faked/test/internal/testpb"
+	"github.com/McHarvvvy/mtkit/test/faked/internal/testendpoint"
+	"github.com/McHarvvvy/mtkit/test/faked/internal/testpb"
 )
 
 // grpcEchoEnvKey 是测试用 gRPC endpoint 在 Addrs.GRPCEndpoints 中的索引 key。

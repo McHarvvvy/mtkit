@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	fakedclient "github.com/McHarvvvy/mtkit/client/fake"
-	"github.com/McHarvvvy/mtkit/faked/test/internal/testendpoint"
+	"github.com/McHarvvvy/mtkit/test/faked/internal/testendpoint"
 )
 
 // TestDispatch_HTTPStaticHappy 是 TC-02：HTTP 注册-命中-日志 三角验证。

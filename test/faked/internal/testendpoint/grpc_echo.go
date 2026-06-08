@@ -16,7 +16,7 @@ import (
 
 	fakedgrpc "github.com/McHarvvvy/mtkit/faked/grpc"
 	grpcroutekey "github.com/McHarvvvy/mtkit/faked/grpc/routekey"
-	"github.com/McHarvvvy/mtkit/faked/test/internal/testpb"
+	"github.com/McHarvvvy/mtkit/test/faked/internal/testpb"
 )
 
 // EndpointEcho 是测试用 gRPC endpoint 的标识。

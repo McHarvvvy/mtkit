@@ -11,8 +11,8 @@ import (
 	"google.golang.org/grpc/status"
 
 	fakedclient "github.com/McHarvvvy/mtkit/client/fake"
-	"github.com/McHarvvvy/mtkit/faked/test/internal/testendpoint"
-	"github.com/McHarvvvy/mtkit/faked/test/internal/testpb"
+	"github.com/McHarvvvy/mtkit/test/faked/internal/testendpoint"
+	"github.com/McHarvvvy/mtkit/test/faked/internal/testpb"
 )
 
 // TestStateful_GRPC 是 TC-07 的 gRPC 部分：sequence/once 单 rule 行为。

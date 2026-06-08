@@ -6,8 +6,8 @@ import (
 	"time"
 
 	grpcproto "github.com/McHarvvvy/mtkit/faked/grpc/protocol"
-	"github.com/McHarvvvy/mtkit/faked/test/internal/testendpoint"
-	"github.com/McHarvvvy/mtkit/faked/test/internal/testpb"
+	"github.com/McHarvvvy/mtkit/test/faked/internal/testendpoint"
+	"github.com/McHarvvvy/mtkit/test/faked/internal/testpb"
 )
 
 // TestDispatch_GRPCStaticHappy 是 TC-01：gRPC 注册-命中-日志 三角验证。

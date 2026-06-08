@@ -8,8 +8,8 @@ import (
 
 	fakedclient "github.com/McHarvvvy/mtkit/client/fake"
 	fakedhttp "github.com/McHarvvvy/mtkit/faked/http"
-	"github.com/McHarvvvy/mtkit/faked/test/internal/testendpoint"
-	"github.com/McHarvvvy/mtkit/faked/test/internal/testpb"
+	"github.com/McHarvvvy/mtkit/test/faked/internal/testendpoint"
+	"github.com/McHarvvvy/mtkit/test/faked/internal/testpb"
 )
 
 // TestCallLog_PathsAndGrowth 是 TC-10：调用日志路径与 runtime.json 声明一致 +

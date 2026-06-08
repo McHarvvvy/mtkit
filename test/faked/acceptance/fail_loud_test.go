@@ -10,8 +10,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/McHarvvvy/mtkit/faked/test/internal/testendpoint"
-	"github.com/McHarvvvy/mtkit/faked/test/internal/testpb"
+	"github.com/McHarvvvy/mtkit/test/faked/internal/testendpoint"
+	"github.com/McHarvvvy/mtkit/test/faked/internal/testpb"
 )
 
 // TestFailLoud_GRPC 是 TC-04 的 gRPC 部分：未命中 fail-loud。

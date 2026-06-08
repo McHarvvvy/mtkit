@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	fakedclient "github.com/McHarvvvy/mtkit/client/fake"
-	"github.com/McHarvvvy/mtkit/faked/test/internal/testendpoint"
+	"github.com/McHarvvvy/mtkit/test/faked/internal/testendpoint"
 )
 
 // TestKeepAlive_PlaintextReuse 验证明文 HTTP/1.1 keep-alive：同一 client 连发两个

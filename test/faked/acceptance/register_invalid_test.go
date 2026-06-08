@@ -10,8 +10,8 @@ import (
 
 	grpcproto "github.com/McHarvvvy/mtkit/faked/grpc/protocol"
 	httpproto "github.com/McHarvvvy/mtkit/faked/http/protocol"
-	"github.com/McHarvvvy/mtkit/faked/test/internal/testendpoint"
-	"github.com/McHarvvvy/mtkit/faked/test/internal/testpb"
+	"github.com/McHarvvvy/mtkit/test/faked/internal/testendpoint"
+	"github.com/McHarvvvy/mtkit/test/faked/internal/testpb"
 )
 
 // TestRegisterInvalid_GRPC 是 TC-05 的 gRPC 部分：非法 rule 注册阶段被拒绝。

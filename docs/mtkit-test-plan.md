@@ -237,7 +237,26 @@ faked 迁移为机械改 import path（`faked/test/...` → `test/faked/...`）�
 
 ---
 
-## 8. 编码顺序
+## 8. 编码顺序与进度
 
-`facade` → `orchestrator` → `sut` → `faked` 迁移 → `e2e`。每层先落骨架（空实现 + 本文 Given/When/Then 注释），逐层评审后再填断言细节。
+`facade` → `orchestrator` → `sut` → `faked` 迁移 → `e2e`。
+
+| 层 | 目录 | 用例 | 状态 |
+| --- | --- | --- | --- |
+| arch | `test/arch/` | 依赖方向守护 | ✅ 迁入并绿 |
+| facade | `test/facade/` | FC-01..07 | ✅ 实现并绿 |
+| orchestrator | `test/orchestrator/` | OR-01..13 | ✅ 实现并绿（进程内真实 daemon HTTP + fake 容器） |
+| sut | `test/sut/` | SM-01..07 | ✅ 实现并绿（sut.Manager 边界 + helper 二进制） |
+| faked | `test/faked/` | 迁移 + FK-01..03 | ✅ 迁入并绿 |
+| e2e | `test/e2e/`（build tag `e2e`） | E2E-1..4 | ✅ 实现并绿（真 redis + re-exec + 真 SUT） |
+
+e2e 落地要点：
+- 真 SUT 的 gRPC 直连线在 `test/e2e/internal/echopb` + `echoendpoint` 自带一份 echo proto/endpoint
+  （独立 test 二进制、不与 faked 共链，无 proto 注册冲突），零扰动已绿的 faked 测试。
+- 真 SUT（`test/e2e/internal/sut`）由框架以 `-tags mtkit_it` 源码构建，含 CA addon 模板副本；
+  一发覆盖三条注入线：REDIS_ADDR ping、`E2E_ECHO_GRPC_ADDR` 直连 dial、`HTTP_PROXY`+CA 发 HTTPS。
+- 统一执行模型：用例自驱 `kit.Run(fakeRunnable)`；`buildKitFromEnv` 经 `E2E_*` env 同时构造 client
+  与 re-exec daemon 的 kit，保证两者一致。client HTTP 超时放宽到 180s，避免 acquire 期间现场构建 SUT 超时。
+
+**全部 5 层 + arch 共 ~40 个用例，全绿。** 运行：非 e2e `go test ./test/... ./faked/...`；e2e `go test -tags e2e ./test/e2e/`（需本地 Docker）。
 ```
