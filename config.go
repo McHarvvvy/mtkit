@@ -11,14 +11,12 @@ import (
 	mtruntime "github.com/McHarvvvy/mtkit/runtime"
 )
 
+// LifecycleConfig 是配置层的进程生命周期参数；只承载 JSON 可表达的秒数，
+// 运行期的 time.Duration 由门面消费时（toSUTRuntimeConfig）派生。
 type LifecycleConfig struct {
 	BuildTimeoutSeconds int `json:"build_timeout_seconds"`
 	ReadyTimeoutSeconds int `json:"ready_timeout_seconds"`
 	GracePeriodSeconds  int `json:"grace_period_seconds"`
-
-	BuildTimeout time.Duration `json:"-"`
-	ReadyTimeout time.Duration `json:"-"`
-	GracePeriod  time.Duration `json:"-"`
 }
 
 type ProcessConfig struct {
@@ -31,26 +29,17 @@ type ProcessConfig struct {
 
 type SUTConfig struct {
 	ProcessConfig
-	IdleTTLSeconds int           `json:"idle_ttl_seconds"`
-	IdleTTL        time.Duration `json:"-"`
+	IdleTTLSeconds int `json:"idle_ttl_seconds"`
 }
 
-// FakedConfig 是 mtkit.config.json 的 faked 块：faked 内嵌 daemon，故只含引擎数据面参数，
+// FakedConfig 是 mtkit.config.json 的 faked 块：faked 内嵌 daemon，故只含数据面参数，
 // 无 source_dir / binary_path / lifecycle / config_path（见 faked-integration-plan §2）。
+//
+// gRPC endpoint 的监听地址不在配置里——由各 endpoint 的 Endpoint.Listen() 在代码中声明
+// （与 EnvKey() 同属项目领域知识，见 faked-integration-plan §9.2）。
 type FakedConfig struct {
 	Enabled bool            `json:"enabled"`
-	GRPC    FakedGRPCConfig `json:"grpc"`
 	HTTP    FakedHTTPConfig `json:"http"`
-}
-
-type FakedGRPCConfig struct {
-	Endpoints []FakedGRPCEndpoint `json:"endpoints"`
-}
-
-// FakedGRPCEndpoint 仅用于按 id 覆盖某 endpoint 的监听地址；env_key 由 Endpoint.EnvKey() 提供。
-type FakedGRPCEndpoint struct {
-	ID     string `json:"id"`
-	Listen string `json:"listen"`
 }
 
 type FakedHTTPConfig struct {
@@ -95,13 +84,8 @@ func normalizeConfig(project string, cfg *Config) error {
 	if strings.TrimSpace(cfg.DaemonMode.Addr) == "" {
 		cfg.DaemonMode.Addr = "127.0.0.1:0"
 	}
-	if cfg.DaemonMode.IdleTTL <= 0 {
-		cfg.DaemonMode.IdleTTL = secondsOrDefault(cfg.DaemonMode.IdleTTLSeconds, 36*time.Second)
-	}
-	if cfg.ClientMode.HTTPTimeout <= 0 {
-		cfg.ClientMode.HTTPTimeout = secondsOrDefault(cfg.ClientMode.HTTPTimeoutSeconds, 60*time.Second)
-	}
-	normalizeSUTConfig(&cfg.SUT)
+	// 超时 / TTL 类参数在配置层只保留 *Seconds（JSON 无法表达 time.Duration）；
+	// 默认值与 Duration 转换统一在门面消费点完成（见 Run / toSUTRuntimeConfig）。
 	if cfg.Faked.Enabled && (cfg.Faked.HTTP.CACertFile == "") != (cfg.Faked.HTTP.CAKeyFile == "") {
 		return fmt.Errorf("mtkit config faked.http ca_cert_file and ca_key_file must be both set or both empty")
 	}
@@ -109,25 +93,6 @@ func normalizeConfig(project string, cfg *Config) error {
 		return err
 	}
 	return nil
-}
-
-func normalizeSUTConfig(cfg *SUTConfig) {
-	if cfg.IdleTTL <= 0 {
-		cfg.IdleTTL = secondsOrDefault(cfg.IdleTTLSeconds, 2*time.Second)
-	}
-	normalizeLifecycle(&cfg.Lifecycle, 120*time.Second, 45*time.Second, 5*time.Second)
-}
-
-func normalizeLifecycle(cfg *LifecycleConfig, buildDefault, readyDefault, graceDefault time.Duration) {
-	if cfg.BuildTimeout <= 0 {
-		cfg.BuildTimeout = secondsOrDefault(cfg.BuildTimeoutSeconds, buildDefault)
-	}
-	if cfg.ReadyTimeout <= 0 {
-		cfg.ReadyTimeout = secondsOrDefault(cfg.ReadyTimeoutSeconds, readyDefault)
-	}
-	if cfg.GracePeriod <= 0 {
-		cfg.GracePeriod = secondsOrDefault(cfg.GracePeriodSeconds, graceDefault)
-	}
 }
 
 func validateProcessConfig(name string, enabled bool, binaryPath, sourceDir string) error {

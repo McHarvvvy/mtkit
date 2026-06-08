@@ -54,17 +54,13 @@ type DaemonModeConfig struct {
 	Addr string `json:"addr"`
 	// Token 指定 daemon 鉴权令牌，空值时由 daemon 自动生成。
 	Token string `json:"-"`
-	// IdleTTL 指定 daemon 空闲自动退出时间。
-	IdleTTL time.Duration `json:"-"`
-	// IdleTTLSeconds 是 JSON 配置里的空闲退出秒数。
+	// IdleTTLSeconds 是 daemon 空闲自动退出秒数；运行期 Duration 由 Run 派生。
 	IdleTTLSeconds int `json:"idle_ttl_seconds"`
 }
 
 // ClientModeConfig 定义 client 模式配置。
 type ClientModeConfig struct {
-	// HTTPTimeout 指定客户端请求 daemon 的 HTTP 超时时间。
-	HTTPTimeout time.Duration `json:"-"`
-	// HTTPTimeoutSeconds 是 JSON 配置里的 HTTP 超时秒数。
+	// HTTPTimeoutSeconds 是客户端请求 daemon 的 HTTP 超时秒数；运行期 Duration 由 Run 派生。
 	HTTPTimeoutSeconds int `json:"http_timeout_seconds"`
 }
 
@@ -139,42 +135,39 @@ func (t *MTKit) Run(m Runnable) int {
 		RuntimeDir:          t.cfg.RuntimeDir,
 		DaemonAddr:          t.cfg.DaemonMode.Addr,
 		DaemonToken:         t.cfg.DaemonMode.Token,
-		DaemonIdleTTL:       t.cfg.DaemonMode.IdleTTL,
-		ClientHTTPTimeout:   t.cfg.ClientMode.HTTPTimeout,
+		DaemonIdleTTL:       secondsOrDefault(t.cfg.DaemonMode.IdleTTLSeconds, 36*time.Second),
+		ClientHTTPTimeout:   secondsOrDefault(t.cfg.ClientMode.HTTPTimeoutSeconds, 60*time.Second),
 		SUTConfig:           toSUTRuntimeConfig(t.cfg.SUT),
 		SUT:                 t.sut,
 		Faked:               toFakedEngineConfig(t.cfg.Faked, t.cfg.RuntimeDir),
 		FakedEnabled:        t.cfg.Faked.Enabled,
-		RegisterContainers:  orchestrator.RegisterContainersFunc(t.registerContainers),
 		ContainerRegistries: t.registrations,
 	}, m)
 }
 
+// toSUTRuntimeConfig 把配置层的 SUTConfig（只含秒数）转成 SUT 运行期配置（含 time.Duration）。
+// 超时 / TTL 的默认值在此一次性派生——配置层不持有任何 Duration。
 func toSUTRuntimeConfig(cfg SUTConfig) sut.Config {
 	return sut.Config{
 		Enabled:      cfg.Enabled,
 		BinaryPath:   cfg.BinaryPath,
 		SourceDir:    cfg.SourceDir,
 		BuildArgs:    cfg.BuildArgs,
-		BuildTimeout: cfg.Lifecycle.BuildTimeout,
-		ReadyTimeout: cfg.Lifecycle.ReadyTimeout,
-		GracePeriod:  cfg.Lifecycle.GracePeriod,
-		IdleTTL:      cfg.IdleTTL,
+		BuildTimeout: secondsOrDefault(cfg.Lifecycle.BuildTimeoutSeconds, 120*time.Second),
+		ReadyTimeout: secondsOrDefault(cfg.Lifecycle.ReadyTimeoutSeconds, 45*time.Second),
+		GracePeriod:  secondsOrDefault(cfg.Lifecycle.GracePeriodSeconds, 5*time.Second),
+		IdleTTL:      secondsOrDefault(cfg.IdleTTLSeconds, 2*time.Second),
 	}
 }
 
-// toFakedEngineConfig 把 mtkit 配置的 faked 块转成内嵌引擎配置。
-// faked 引擎产物（调用日志 / 动态 CA）落在 <mtkit.runtime_dir>/faked 下。
+// toFakedEngineConfig 把 mtkit 配置的 faked 块转成内嵌 server 配置。
+// gRPC endpoint 监听地址不在此——由 Endpoint.Listen() 在代码中声明。
+// faked 产物（调用日志 / 动态 CA）落在 <mtkit.runtime_dir>/faked 下。
 func toFakedEngineConfig(cfg FakedConfig, runtimeDir string) mtfaked.Config {
-	eps := make([]mtfaked.GRPCEndpointConfig, 0, len(cfg.GRPC.Endpoints))
-	for _, e := range cfg.GRPC.Endpoints {
-		eps = append(eps, mtfaked.GRPCEndpointConfig{ID: e.ID, Listen: e.Listen})
-	}
 	return mtfaked.Config{
-		GRPCEndpoints: eps,
-		ProxyListen:   cfg.HTTP.ProxyListen,
-		CACertFile:    cfg.HTTP.CACertFile,
-		CAKeyFile:     cfg.HTTP.CAKeyFile,
-		RuntimeDir:    filepath.Join(runtimeDir, "faked"),
+		ProxyListen: cfg.HTTP.ProxyListen,
+		CACertFile:  cfg.HTTP.CACertFile,
+		CAKeyFile:   cfg.HTTP.CAKeyFile,
+		RuntimeDir:  filepath.Join(runtimeDir, "faked"),
 	}
 }

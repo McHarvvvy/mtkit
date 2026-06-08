@@ -5,13 +5,10 @@ import (
 	"fmt"
 	"log"
 
+	mtconstant "github.com/McHarvvvy/mtkit/constant"
 	mtfaked "github.com/McHarvvvy/mtkit/faked"
 	mtruntime "github.com/McHarvvvy/mtkit/runtime"
 )
-
-// envCACertFile 是 mtkit 注入给 SUT 的 faked 根 CA 公钥路径环境变量名。
-// 须与 SUT 侧拷入的 mtkit CA 插件（mtkit/addons/mtkit_ca_addon.go）读取的名字一致。
-const envCACertFile = "MTKIT_CA_CERT_FILE"
 
 func (d *Daemon) ensureInfraStarted(ctx context.Context) error {
 	// 关键决策：基础设施启动入口串行化，避免同一 daemon 被并发 Acquire 重复拉容器。
@@ -114,7 +111,7 @@ func fakedInjectEnv(addrs mtfaked.Addrs) map[string]string {
 		env["NO_PROXY"] = "127.0.0.1,localhost"
 	}
 	if addrs.CACertFile != "" {
-		env[envCACertFile] = addrs.CACertFile
+		env[mtconstant.EnvMTKitCACertFile] = addrs.CACertFile
 	}
 	return env
 }

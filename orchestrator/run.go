@@ -20,23 +20,21 @@ type Runnable interface {
 	Run() int
 }
 
-// RegisterContainersFunc 定义容器注册函数。
-type RegisterContainersFunc func(ctx context.Context) ([]container.ContainerRegistration, error)
-
 // RunConfig 是 orchestrator 执行 daemon/client 分流所需的配置。
 type RunConfig struct {
-	Project             string
-	RuntimePath         string
-	RuntimeDir          string
-	DaemonAddr          string
-	DaemonToken         string
-	DaemonIdleTTL       time.Duration
-	ClientHTTPTimeout   time.Duration
-	SUTConfig           sut.Config
-	SUT                 sut.SUTBootPlan
-	Faked               mtfaked.Config
-	FakedEnabled        bool
-	RegisterContainers  RegisterContainersFunc
+	Project           string
+	RuntimePath       string
+	RuntimeDir        string
+	DaemonAddr        string
+	DaemonToken       string
+	DaemonIdleTTL     time.Duration
+	ClientHTTPTimeout time.Duration
+	SUTConfig         sut.Config
+	SUT               sut.SUTBootPlan
+	Faked             mtfaked.Config
+	FakedEnabled      bool
+	// ContainerRegistries 是门面已校验（ValidateRegistrations）的容器注册项；
+	// daemon 模式直接消费，空切片由 Daemon.New → NewBundle 兜底 fail-loud。
 	ContainerRegistries []container.ContainerRegistration
 }
 
@@ -51,19 +49,7 @@ func Run(cfg RunConfig, m Runnable) int {
 func runDaemonMode(cfg RunConfig) int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	if cfg.RegisterContainers == nil {
-		log.Printf("mtkit registerContainers is nil")
-		return 1
-	}
 	regs := cfg.ContainerRegistries
-	if len(regs) == 0 {
-		var loadErr error
-		regs, loadErr = cfg.RegisterContainers(ctx)
-		if loadErr != nil {
-			log.Printf("mtkit register containers failed: %v", loadErr)
-			return 1
-		}
-	}
 
 	dcfg := Config{
 		Addr:        cfg.DaemonAddr,

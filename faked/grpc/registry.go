@@ -47,6 +47,10 @@ type Endpoint interface {
 	// 由 endpoint 自身声明（项目领域知识）：daemon 用它作 runtime 地址 map 的 key
 	// 并注入 SUT，不再经配置文件传入（见 faked-integration-plan §9.2）。
 	EnvKey() string
+	// Listen 返回本 endpoint fake server 的监听地址（"host:port"）。
+	// 由 endpoint 自身声明（项目领域知识，与 EnvKey 同源），不再经配置文件传入：
+	// 用固定端口还是 "127.0.0.1:0" 随机端口是项目方的选择，框架不干涉、不强制。
+	Listen() string
 	// Register 把所有 typed 薄壳注册到 grpc server；deps 提供 ActionEngine。
 	Register(s *googrpc.Server, deps EndpointDeps)
 	// Methods 返回本 endpoint 静态声明的所有 RPC method 元数据。

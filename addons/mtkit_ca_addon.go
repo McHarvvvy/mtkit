@@ -19,6 +19,8 @@ import (
 )
 
 func init() {
+	// 名字须与 mtkit 注入侧一致（source of truth：mtkit/constant.EnvMTKitCACertFile）。
+	// 本文件是脱离式模板、零 mtkit import，故此处只能硬编码字面量。
 	caFile := os.Getenv("MTKIT_CA_CERT_FILE")
 	if caFile == "" {
 		return

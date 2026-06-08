@@ -36,6 +36,8 @@ func (echoEndpoint) ID() string { return EndpointEcho }
 
 func (echoEndpoint) EnvKey() string { return EnvKeyEcho }
 
+func (echoEndpoint) Listen() string { return "127.0.0.1:0" }
+
 func (echoEndpoint) Register(s *googrpc.Server, deps fakedgrpc.EndpointDeps) {
 	testpb.RegisterEchoServer(s, &echoService{Engine: deps.Engine})
 }

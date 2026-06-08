@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/McHarvvvy/mtkit"
 	"github.com/McHarvvvy/mtkit/container"
@@ -19,12 +18,12 @@ func Run(m *testing.M) int {
 		&mtkit.Config{
 			RuntimeDir: filepath.Join(os.TempDir(), "mt", "mssiot_user"),
 			DaemonMode: mtkit.DaemonModeConfig{
-				Addr:    "127.0.0.1:0",
-				Token:   "",
-				IdleTTL: 36 * time.Second,
+				Addr:           "127.0.0.1:0",
+				Token:          "",
+				IdleTTLSeconds: 36,
 			},
 			ClientMode: mtkit.ClientModeConfig{
-				HTTPTimeout: 1 * time.Minute,
+				HTTPTimeoutSeconds: 60,
 			},
 		},
 	)

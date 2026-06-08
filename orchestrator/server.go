@@ -54,7 +54,7 @@ type Daemon struct {
 	startedAt   time.Time
 	runtimePath string
 	runtimeInfo mtruntime.RuntimeInfo // Start 写入的基线，faked/sut env 就绪后追加段重写
-	faked       *mtfaked.Engine       // nil 表示 faked 未启用
+	faked       *mtfaked.Server       // nil 表示 faked 未启用
 	fakedEnv    map[string]string     // ensureFakedStarted 暂存的 faked 注入 env
 	sutEnvReady bool                  // prepareSUTEnv 是否已组装并落盘（幂等）
 	sut         *sut.Manager
@@ -92,9 +92,9 @@ func New(cfg Config, regs []container.ContainerRegistration) (*Daemon, error) {
 	if err != nil {
 		return nil, err
 	}
-	var fakedEngine *mtfaked.Engine
+	var fakedServer *mtfaked.Server
 	if cfg.FakedEnabled {
-		fakedEngine, err = mtfaked.New(cfg.Faked)
+		fakedServer, err = mtfaked.New(cfg.Faked)
 		if err != nil {
 			return nil, err
 		}
@@ -113,7 +113,7 @@ func New(cfg Config, regs []container.ContainerRegistration) (*Daemon, error) {
 		store:       newLeaseStore(),
 		startedAt:   time.Now(),
 		runtimePath: cfg.RuntimePath,
-		faked:       fakedEngine,
+		faked:       fakedServer,
 		sut:         sut.NewManager(cfg.SUTConfig, cfg.SUT, sutInput),
 		done:        make(chan struct{}),
 	}, nil

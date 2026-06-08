@@ -94,7 +94,7 @@ func runWithSharedEngine(m *testing.M) (int, error) {
 
 // startEngine 构造进程内 faked 引擎：control 挂 httptest server（模拟 daemon 主 mux），
 // 数据面 :0、CA 动态生成。返回引擎、数据面地址、control server。
-func startEngine(runtimeDir string) (*faked.Engine, faked.Addrs, *httptest.Server, error) {
+func startEngine(runtimeDir string) (*faked.Server, faked.Addrs, *httptest.Server, error) {
 	eng, err := faked.New(faked.Config{
 		RuntimeDir:  runtimeDir,
 		ProxyListen: "127.0.0.1:0",
