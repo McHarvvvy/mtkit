@@ -58,6 +58,7 @@ type Daemon struct {
 	fakedEnv    map[string]string     // ensureFakedStarted 暂存的 faked 注入 env
 	sutEnvReady bool                  // prepareSUTEnv 是否已组装并落盘（幂等）
 	sut         *sut.Manager
+	cleaner     OrphanCleaner // 启动前清理同名孤儿容器；默认 container.CleanupOrphans，测试经 WithOrphanCleaner 注入 no-op
 
 	startMu      sync.Mutex
 	infraStarted bool
@@ -70,8 +71,31 @@ type Daemon struct {
 	acquireInFlight atomic.Int32
 }
 
+// OrphanCleaner 在 daemon 启动前清理同名残留容器，确保从干净环境开始。
+// 抽成接口是为了让进程内编排测试注入 no-op 替身，把 orchestrator 与 Docker 解耦
+// （生产默认实现仍是 container.CleanupOrphans）。
+type OrphanCleaner interface {
+	CleanupOrphans(ctx context.Context, regs []container.ContainerRegistration) error
+}
+
+// Option 是 New 的构造期可选配置。行为类依赖（如 OrphanCleaner）经 Option 注入，
+// 不放进 Config——Config 只承载数据，行为注入留给构造期。
+type Option func(*Daemon)
+
+// WithOrphanCleaner 覆盖默认的孤儿容器清理实现（测试用 no-op 即可去 Docker 依赖）。
+func WithOrphanCleaner(c OrphanCleaner) Option {
+	return func(d *Daemon) { d.cleaner = c }
+}
+
+// cleanerFunc 把自由函数适配成 OrphanCleaner，使默认值直接复用 container.CleanupOrphans。
+type cleanerFunc func(ctx context.Context, regs []container.ContainerRegistration) error
+
+func (f cleanerFunc) CleanupOrphans(ctx context.Context, regs []container.ContainerRegistration) error {
+	return f(ctx, regs)
+}
+
 // New 创建守护进程实例。
-func New(cfg Config, regs []container.ContainerRegistration) (*Daemon, error) {
+func New(cfg Config, regs []container.ContainerRegistration, opts ...Option) (*Daemon, error) {
 	if cfg.Addr == "" {
 		// 关键决策：默认使用随机可用端口，避免本地并发测试或残留进程导致固定端口冲突。
 		cfg.Addr = "127.0.0.1:0"
@@ -106,7 +130,7 @@ func New(cfg Config, regs []container.ContainerRegistration) (*Daemon, error) {
 		RuntimePath: cfg.RuntimePath,
 		RuntimeDir:  cfg.RuntimeDir,
 	}
-	return &Daemon{
+	d := &Daemon{
 		cfg:         cfg,
 		regs:        regs,
 		bundle:      bundle,
@@ -116,7 +140,15 @@ func New(cfg Config, regs []container.ContainerRegistration) (*Daemon, error) {
 		faked:       fakedServer,
 		sut:         sut.NewManager(cfg.SUTConfig, cfg.SUT, sutInput),
 		done:        make(chan struct{}),
-	}, nil
+	}
+	for _, opt := range opts {
+		opt(d)
+	}
+	// 默认实现：复用现有自由函数（生产路径行为不变）；测试经 WithOrphanCleaner 注入 no-op。
+	if d.cleaner == nil {
+		d.cleaner = cleanerFunc(container.CleanupOrphans)
+	}
+	return d, nil
 }
 
 // Start 启动守护进程并阻塞直到退出。
@@ -128,7 +160,7 @@ func (d *Daemon) Start(ctx context.Context) error {
 	defer logFile.Close()
 	log.SetOutput(logFile)
 
-	if err := container.CleanupOrphans(ctx, d.regs); err != nil {
+	if err := d.cleaner.CleanupOrphans(ctx, d.regs); err != nil {
 		return err
 	}
 

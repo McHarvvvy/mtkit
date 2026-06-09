@@ -204,14 +204,26 @@ func TestSM05_ReuseIdempotent(t *testing.T) {
 
 func TestSM06_GracefulStop(t *testing.T) {
 	mgr := newManager(t, baseCfg(), bootPlan{binary: helperBin, knobs: map[string]string{"SUTHELPER_MODE": "stable"}})
-	ctx := context.Background()
-	if err := mgr.EnsureStarted(ctx); err != nil {
+	if err := mgr.EnsureStarted(context.Background()); err != nil {
 		t.Fatalf("EnsureStarted: %v", err)
 	}
 	pid := mgr.Snapshot().PID
-	if err := mgr.Stop(ctx); err != nil {
-		t.Fatalf("Stop: %v", err)
+
+	// 给 Stop 一个超时 ctx 并在 goroutine 中执行：Stop 若退化为挂住，本用例在限定时间内
+	// 清晰失败，而非卡到全局测试超时。
+	stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stopErr := make(chan error, 1)
+	go func() { stopErr <- mgr.Stop(stopCtx) }()
+	select {
+	case err := <-stopErr:
+		if err != nil {
+			t.Fatalf("Stop: %v", err)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("Stop 未在限定时间内返回（疑似挂住）")
 	}
+
 	if stillAlive := waitProcessGone(pid, 5*time.Second); stillAlive {
 		t.Fatalf("停止后进程 %d 仍存活", pid)
 	}

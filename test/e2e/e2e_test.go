@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -62,7 +63,11 @@ func TestE2E1_FullStack(t *testing.T) {
 		grpcOut = sutTrigger(t, ctrl, "/call-grpc", key)
 		httpsOut = sutTrigger(t, ctrl, "/call-https", key)
 
-		if pingOut == "ok" && strings.Contains(grpcOut, "grpc-ok") && strings.Contains(httpsOut, "https-ok") {
+		// 强断言：gRPC 同时校验 code 与 msg；HTTPS 同时校验 status 与 body——避免 code/status
+		// 丢失但 msg/body 凑巧匹配的假绿。
+		grpcOK := strings.Contains(grpcOut, "code=7") && strings.Contains(grpcOut, "msg=grpc-ok")
+		httpsOK := strings.Contains(httpsOut, "status=200") && strings.Contains(httpsOut, "https-ok")
+		if pingOut == "ok" && grpcOK && httpsOK {
 			return 0
 		}
 		return 1
@@ -73,11 +78,13 @@ func TestE2E1_FullStack(t *testing.T) {
 	}
 }
 
-// TestE2E2_ExitCodePassthrough 验证退出码端到端透传（F1）。无需 Docker（noop 容器）。
+// TestE2E2_ExitCodePassthrough 验证退出码端到端透传（F1）。noop 容器不拉镜像，但 daemon
+// 启动仍走（真 facade 的）CleanupOrphans 的 Docker list，故仍需 Docker 可达。
 func TestE2E2_ExitCodePassthrough(t *testing.T) {
 	for _, want := range []int{0, 1} {
 		want := want
 		t.Run(fmt.Sprintf("return-%d", want), func(t *testing.T) {
+			requireDocker(t)
 			dir := t.TempDir()
 			setupEnv(t, envOpts{
 				runtimeDir: dir, container: "noop", containerName: uniqueName("e2e-noop"), idleTTLSec: 5,
@@ -90,33 +97,98 @@ func TestE2E2_ExitCodePassthrough(t *testing.T) {
 	}
 }
 
-// TestE2E3_Reuse 验证连续独立 Run 跨进程复用同一 daemon 与同一容器（F4）。
+// TestE2E3_Reuse 验证跨进程复用同一 daemon 与同一容器（F4）：连续 + 并发两种场景。
+// 并发场景专门覆盖 autoStartDaemon 的 .start.lock 单飞——首启竞争时不重复拉 daemon/容器。
 func TestE2E3_Reuse(t *testing.T) {
 	requireDocker(t)
-	name := uniqueName("e2e-reuse")
-	dir := t.TempDir()
-	setupEnv(t, envOpts{runtimeDir: dir, container: "redis", containerName: name, idleTTLSec: 30})
-	t.Cleanup(func() { cleanup(name, dir) })
 
-	var id1, id2 string
-	var pid1, pid2 int
-	mustBuildKit(t).Run(fakeRunnable{fn: func() int {
-		id1 = containerIDByName(t, name)
-		pid1 = daemonPID(t, dir)
-		return 0
-	}})
-	mustBuildKit(t).Run(fakeRunnable{fn: func() int {
-		id2 = containerIDByName(t, name)
-		pid2 = daemonPID(t, dir)
-		return 0
-	}})
+	t.Run("sequential", func(t *testing.T) {
+		name := uniqueName("e2e-reuse-s")
+		dir := t.TempDir()
+		setupEnv(t, envOpts{runtimeDir: dir, container: "redis", containerName: name, idleTTLSec: 30})
+		t.Cleanup(func() { cleanup(name, dir) })
 
-	if id1 == "" || id1 != id2 {
-		t.Fatalf("应复用同一容器：id1=%q id2=%q", id1, id2)
-	}
-	if pid1 == 0 || pid1 != pid2 {
-		t.Fatalf("应复用同一 daemon：pid1=%d pid2=%d", pid1, pid2)
-	}
+		var id1, id2 string
+		var pid1, pid2 int
+		mustBuildKit(t).Run(fakeRunnable{fn: func() int {
+			id1 = containerIDByName(t, name)
+			pid1 = daemonPID(t, dir)
+			return 0
+		}})
+		mustBuildKit(t).Run(fakeRunnable{fn: func() int {
+			id2 = containerIDByName(t, name)
+			pid2 = daemonPID(t, dir)
+			return 0
+		}})
+
+		if id1 == "" || id1 != id2 {
+			t.Fatalf("应复用同一容器：id1=%q id2=%q", id1, id2)
+		}
+		if pid1 == 0 || pid1 != pid2 {
+			t.Fatalf("应复用同一 daemon：pid1=%d pid2=%d", pid1, pid2)
+		}
+	})
+
+	t.Run("concurrent", func(t *testing.T) {
+		name := uniqueName("e2e-reuse-c")
+		dir := t.TempDir()
+		setupEnv(t, envOpts{runtimeDir: dir, container: "redis", containerName: name, idleTTLSec: 30})
+		t.Cleanup(func() { cleanup(name, dir) })
+
+		const n = 3
+		type result struct {
+			id  string
+			pid int
+		}
+		resCh := make(chan result, n)
+		errCh := make(chan error, n)
+		var wg sync.WaitGroup
+		for i := 0; i < n; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				// goroutine 内不碰 t（非线程安全）：用 goroutine 安全读，结果/错误回 channel。
+				kit, err := buildKitFromEnv()
+				if err != nil {
+					errCh <- err
+					return
+				}
+				kit.Run(fakeRunnable{fn: func() int {
+					id, _ := dockerInspectID(name)
+					info, _ := mtruntime.Read(runtimeFile(dir))
+					resCh <- result{id: id, pid: info.PID}
+					return 0
+				}})
+			}()
+		}
+		wg.Wait()
+		close(resCh)
+		close(errCh)
+
+		for err := range errCh {
+			t.Fatalf("并发 buildKit: %v", err)
+		}
+		ids := map[string]struct{}{}
+		pids := map[int]struct{}{}
+		count := 0
+		for r := range resCh {
+			if r.id == "" || r.pid == 0 {
+				t.Fatalf("并发 Run 读到空容器/PID：%+v", r)
+			}
+			ids[r.id] = struct{}{}
+			pids[r.pid] = struct{}{}
+			count++
+		}
+		if count != n {
+			t.Fatalf("期望 %d 次并发 Run 全部完成，得 %d", n, count)
+		}
+		if len(ids) != 1 {
+			t.Fatalf("并发应共享同一容器，却出现 %d 个不同 ID：%v", len(ids), ids)
+		}
+		if len(pids) != 1 {
+			t.Fatalf("并发应共享同一 daemon，却出现 %d 个不同 PID：%v", len(pids), pids)
+		}
+	})
 }
 
 // TestE2E4_IdleCleanup 验证 idle 自动退出 + 真容器/runtime 清理、无孤儿（F5）。

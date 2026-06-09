@@ -32,19 +32,33 @@ func TestOR01_AcquireBringsInfraReady(t *testing.T) {
 	}
 }
 
-// TestOR02_TokenAuth 验证 token 鉴权（F2/横切）。
+// TestOR02_TokenAuth 验证 token 鉴权对**任一** lease 接口一致生效（F2/横切）。
 func TestOR02_TokenAuth(t *testing.T) {
 	reg, _ := oneFakeReg("redis")
 	h := newHarness(t, []container.ContainerRegistration{reg}, nil)
 
-	body := protocol.AcquireReq{PID: os.Getpid()}
+	// withAuth 包住全部 lease 路由——逐一断言无 token 一律 401（不只 acquire）。
+	endpoints := []struct {
+		name   string
+		method string
+		path   string
+		body   any
+	}{
+		{"acquire", http.MethodPost, protocol.PathAcquire, protocol.AcquireReq{PID: os.Getpid()}},
+		{"heartbeat", http.MethodPost, protocol.PathHeartbeat, protocol.HeartbeatReq{LeaseID: "x"}},
+		{"release", http.MethodPost, protocol.PathRelease, protocol.ReleaseReq{LeaseID: "x"}},
+		{"state", http.MethodGet, protocol.PathState, nil},
+	}
+	for _, ep := range endpoints {
+		t.Run("missing token -> 401: "+ep.name, func(t *testing.T) {
+			resp, _ := h.doToken(ep.method, ep.path, ep.body, "")
+			if resp.StatusCode != http.StatusUnauthorized {
+				t.Fatalf("%s 无 token 期望 401，得 %d", ep.name, resp.StatusCode)
+			}
+		})
+	}
 
-	t.Run("missing token -> 401", func(t *testing.T) {
-		resp, _ := h.doToken(http.MethodPost, protocol.PathAcquire, body, "")
-		if resp.StatusCode != http.StatusUnauthorized {
-			t.Fatalf("无 token 期望 401，得 %d", resp.StatusCode)
-		}
-	})
+	body := protocol.AcquireReq{PID: os.Getpid()}
 	t.Run("wrong token -> 401", func(t *testing.T) {
 		resp, _ := h.doToken(http.MethodPost, protocol.PathAcquire, body, "wrong-token")
 		if resp.StatusCode != http.StatusUnauthorized {

@@ -99,6 +99,15 @@ func TestFC03_SUTEnabledRequiresBinaryOrSource(t *testing.T) {
 			t.Fatalf("SUT 启用且给定 binary_path，应通过：%v", err)
 		}
 	})
+
+	t.Run("enabled with source dir", func(t *testing.T) {
+		cfg := &mtkit.Config{RuntimeDir: dir}
+		cfg.SUT.Enabled = true
+		cfg.SUT.SourceDir = "/path/to/src"
+		if _, err := mtkit.New("proj", cfg); err != nil {
+			t.Fatalf("SUT 启用且给定 source_dir，应通过：%v", err)
+		}
+	})
 }
 
 // ─── FC-04 RuntimeFile 解析 ─────────────────────────────────────────────────

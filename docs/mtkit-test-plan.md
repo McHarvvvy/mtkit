@@ -59,6 +59,7 @@
 | 依赖 | 策略 | 理由 |
 | --- | --- | --- |
 | 容器 / Docker | 对编排逻辑用 **fake 容器**（实现 `testcontainers.Container`，仅记录是否被 `Terminate`）/ nil stub；仅 F4/F5/F1 全栈用**真实 Docker**（少量 e2e） | mock 内部 IO 会假绿；编排逻辑与 Docker 无关 |
+| daemon 启动期 orphan cleanup | 经 `orchestrator.WithOrphanCleaner` 注入 **no-op**，使 orchestrator 进程内测试**完全不触发任何 Docker 调用**（`CleanupOrphans` 原本是硬接线自由函数、无法 fake，故做成 1-方法接口的构造期 DI）；真实 cleanup 由 e2e（真 facade）覆盖 | 该处不 DI 化就只能 require Docker/skip——是掩耳盗铃式假绿 |
 | daemon | 默认**进程内构造 `orchestrator.New` + 真实 HTTP 服务**（goroutine 跑 `Start`，经真实端口打 lease API）；仅 F4 跨进程复用走真 re-exec | lease API 本质是 HTTP 服务，真协议可在进程内验证 |
 | SUT 进程 | 主体打 `sut.Manager` 边界（经测试 `SUTBootPlan` 驱动最小 helper 二进制，真子进程）；e2e 用源码构建的真 SUT | 进程管理必须对真进程验证；`sut.Manager` 是 SUT 语义稳定边界 |
 | 时间 / TTL | 短 TTL + 轮询容忍窗口（reaper tick 固定 2s，用例容忍 ≥ 该粒度） | 不咬实现时序 |
@@ -178,14 +179,16 @@ faked 迁移为机械改 import path（`faked/test/...` → `test/faked/...`）�
 
 ### 5.4 `test/faked` — 迁移 + 补缺（F7）
 
-迁移后保留既有覆盖（static / sequence repeat-last·error / once / 跨规则隔离 / 调用日志 / 并发 / keep-alive / fail-loud / register-invalid / HTTP·HTTPS 数据面）。补三条：
+迁移后保留既有覆盖（static / sequence repeat-last·error / once / 跨规则隔离 / 调用日志 / 并发 / keep-alive / fail-loud / register-invalid / HTTP·HTTPS 数据面）。补四条：
 
 - **FK-01 gRPC 独立 Error action**（F7）
   Given 注册 `GRPC().Error(code,msg)` 规则；When SUT 调用命中 → Then 返回该 gRPC status code 与消息；调用日志记 matched=true。
-- **FK-02 路由不匹配归因**（F7）
-  Given 注册某 method/path/host 的规则；When 用**不匹配**的 method/path/host 调用 → Then fail-loud（未命中），调用日志记 matched=false（区别于"无任何规则"）。
+- **FK-02 method 不匹配归因**（F7）
+  Given 端点为 `/v1/login` 注册了 POST 路由；When 对同路径发 PUT（method 不符）→ Then fail-loud（>=400），调用日志记一条 matched=false（带正确 method/path）。用独占 daemon 在私有日志按 host+method+path 归因。
 - **FK-03 静态 CA 模式**（F7）
   Given 用预置 `ca_cert_file`/`ca_key_file` 构造 engine（静态 CA）；When 经代理发 HTTPS 命中 → Then 用该 CA 完成 TLS 握手并返回规则响应。
+- **FK-04 route_key 精确匹配**（F7）
+  Given 在 `/v1/login` 注册 route_key=A 的规则；When 以 A 调用 → 命中 200；以同路由未注册的 B 调用 → fail-loud（不过度匹配到 A 的规则）。
 
 ---
 
@@ -245,10 +248,10 @@ faked 迁移为机械改 import path（`faked/test/...` → `test/faked/...`）�
 | --- | --- | --- | --- |
 | arch | `test/arch/` | 依赖方向守护 | ✅ 迁入并绿 |
 | facade | `test/facade/` | FC-01..07 | ✅ 实现并绿 |
-| orchestrator | `test/orchestrator/` | OR-01..13 | ✅ 实现并绿（进程内真实 daemon HTTP + fake 容器） |
+| orchestrator | `test/orchestrator/` | OR-01..13 | ✅ 实现并绿（进程内真实 daemon HTTP + fake 容器；经 `WithOrphanCleaner` 注入 no-op，**Docker 无关**） |
 | sut | `test/sut/` | SM-01..07 | ✅ 实现并绿（sut.Manager 边界 + helper 二进制） |
-| faked | `test/faked/` | 迁移 + FK-01..03 | ✅ 迁入并绿 |
-| e2e | `test/e2e/`（build tag `e2e`） | E2E-1..4 | ✅ 实现并绿（真 redis + re-exec + 真 SUT） |
+| faked | `test/faked/` | 迁移 + FK-01..04 | ✅ 迁入并绿（FK-02 method 不匹配归因、FK-04 route_key 精确匹配） |
+| e2e | `test/e2e/`（build tag `e2e`） | E2E-1..4（E2E-3 含并发单飞） | ✅ 实现（真 redis + re-exec + 真 SUT；需 Docker 运行验证） |
 
 e2e 落地要点：
 - 真 SUT 的 gRPC 直连线在 `test/e2e/internal/echopb` + `echoendpoint` 自带一份 echo proto/endpoint

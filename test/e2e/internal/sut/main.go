@@ -40,12 +40,13 @@ func main() {
 		fmt.Fprint(w, "ok")
 	})
 	mux.HandleFunc("/call-grpc", func(w http.ResponseWriter, r *http.Request) {
-		msg, err := callGRPC(os.Getenv(echopb.EnvKeyEchoGRPC), r.URL.Query().Get("key"))
+		code, msg, err := callGRPC(os.Getenv(echopb.EnvKeyEchoGRPC), r.URL.Query().Get("key"))
 		if err != nil {
 			fmt.Fprintf(w, "fail:%v", err)
 			return
 		}
-		fmt.Fprintf(w, "ok:%s", msg)
+		// 同时回 code 与 msg，使测试能断言 gRPC 响应的完整内容（避免 code 丢失的假绿）。
+		fmt.Fprintf(w, "ok code=%d msg=%s", code, msg)
 	})
 	mux.HandleFunc("/call-https", func(w http.ResponseWriter, r *http.Request) {
 		status, body, err := callHTTPS(r.URL.Query().Get("key"))
@@ -88,23 +89,23 @@ func pingRedis(addr string) error {
 	return nil
 }
 
-// callGRPC 直连注入的 fake gRPC 地址（明文），调用 Echo.Ping，返回响应 Msg。
-func callGRPC(addr, key string) (string, error) {
+// callGRPC 直连注入的 fake gRPC 地址（明文），调用 Echo.Ping，返回响应 Code 与 Msg。
+func callGRPC(addr, key string) (int32, string, error) {
 	if addr == "" {
-		return "", fmt.Errorf("empty %s", echopb.EnvKeyEchoGRPC)
+		return 0, "", fmt.Errorf("empty %s", echopb.EnvKeyEchoGRPC)
 	}
 	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		return "", err
+		return 0, "", err
 	}
 	defer conn.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	res, err := echopb.NewEchoClient(conn).Ping(ctx, &echopb.PingReq{Key: key})
 	if err != nil {
-		return "", err
+		return 0, "", err
 	}
-	return res.GetMsg(), nil
+	return res.GetCode(), res.GetMsg(), nil
 }
 
 // callHTTPS 经注入的 HTTP_PROXY + CA（由 mtkit_ca_addon.go 装入 RootCAs）对 faked 发 HTTPS。

@@ -15,6 +15,7 @@ import (
 
 	fakedclient "github.com/McHarvvvy/mtkit/client/fake"
 	"github.com/McHarvvvy/mtkit/faked"
+	fakedhttp "github.com/McHarvvvy/mtkit/faked/http"
 	"github.com/McHarvvvy/mtkit/faked/http/ca"
 	"github.com/McHarvvvy/mtkit/test/faked/internal/testendpoint"
 	"github.com/McHarvvvy/mtkit/test/faked/internal/testpb"
@@ -50,11 +51,44 @@ func TestFK01_GRPCErrorAction(t *testing.T) {
 	h.requireGRPCHit(t, key, "") // 命中即可，不绑定 action_kind 文案
 }
 
-// TestFK02_HTTPRouteKeyExactMatch 验证规则按 route_key 精确匹配、不向同路由其它 key 过度匹配（F7）。
+// TestFK02_HTTPMethodMismatchMiss 验证 method 不匹配按未命中归因（F7）。
+//
+// Given 端点为 /v1/login 注册了 POST 路由；When 对同路径发 PUT（method 不符）；
+// Then fail-loud（>=400），且调用日志记一条 matched=false（带正确 method/path）。
+// 用独占 daemon：该类 miss 无 route_key，需在私有日志里按 host+method+path 归因。
+func TestFK02_HTTPMethodMismatchMiss(t *testing.T) {
+	t.Parallel()
+	h := newIsolatedHarness(t)
+	cl := h.httpClient(t)
+
+	req, err := stdhttp.NewRequest(stdhttp.MethodPut,
+		"http://"+testendpoint.HostAccTest+testendpoint.PathLogin,
+		strings.NewReader(`{"account_id":"x"}`))
+	if err != nil {
+		t.Fatalf("build PUT request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := cl.Do(req)
+	if err != nil {
+		t.Fatalf("PUT via proxy: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode < 400 {
+		t.Fatalf("method 不匹配应 fail-loud（>=400），得 %d", resp.StatusCode)
+	}
+
+	h.requireHTTPMiss(t, "method mismatch PUT /v1/login", func(ev fakedhttp.CallEvent) bool {
+		return ev.Endpoint == testendpoint.HostAccTest &&
+			ev.Method == stdhttp.MethodPut &&
+			ev.Path == testendpoint.PathLogin
+	})
+}
+
+// TestFK04_HTTPRouteKeyExactMatch 验证规则按 route_key 精确匹配、不向同路由其它 key 过度匹配（F7）。
 //
 // Given 在 PathLogin 注册 route_key=A 的规则；
 // When 以 A 调用 → 命中返回 200；以未注册的 B 调用 → fail-loud（不落到 A 的规则上）。
-func TestFK02_HTTPRouteKeyExactMatch(t *testing.T) {
+func TestFK04_HTTPRouteKeyExactMatch(t *testing.T) {
 	t.Parallel()
 	h := sharedHarness(t)
 	keyA := caseKey(t) + "-a"

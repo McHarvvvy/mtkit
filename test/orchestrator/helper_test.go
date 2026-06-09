@@ -4,8 +4,8 @@
 // 形态：**进程内构造真实 daemon**——`orchestrator.New` + goroutine 跑 `Start`，经真实
 // 端口打 lease HTTP API。容器用 fake 替身（见 fakeContainer），全程不创建真实容器。
 //
-// 注意：daemon 启动会调 container.CleanupOrphans 做一次 Docker list（按名匹配，匹配不到
-// 任何 fake 名故不删任何东西，也不创建容器）。因此本层需 Docker 可达，但不拉容器。
+// 经 mtorch.WithOrphanCleaner 注入 no-op 孤儿清理器：daemon 启动不再触发任何 Docker 调用，
+// 本层完全 Docker 无关、确定性强。真实 orphan cleanup 由 e2e 层（真 facade）覆盖。
 package orchestrator
 
 import (
@@ -28,6 +28,14 @@ import (
 )
 
 const testToken = "orch-test-token"
+
+// noopCleaner 是注入给 daemon 的 no-op 孤儿清理器。orchestrator 的编排逻辑与 Docker 无关，
+// 注入它使本层进程内测试完全不触发任何 Docker 调用——这是去 Docker 依赖的关键。
+type noopCleaner struct{}
+
+func (noopCleaner) CleanupOrphans(context.Context, []container.ContainerRegistration) error {
+	return nil
+}
 
 // fakeContainer 是不碰 Docker 的容器替身：只记录是否被 Terminate——回滚契约的观察面
 // （"已起容器在回滚后被终止" = 这个 fake 的终态，而非调用次数）。
@@ -90,21 +98,28 @@ func newHarness(t *testing.T, regs []container.ContainerRegistration, mutate fun
 		mutate(&cfg)
 	}
 
-	d, err := mtorch.New(cfg, regs)
+	d, err := mtorch.New(cfg, regs, mtorch.WithOrphanCleaner(noopCleaner{}))
 	if err != nil {
 		t.Fatalf("orchestrator.New: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
+	startErrCh := make(chan error, 1)
 	go func() {
-		defer close(done)
-		_ = d.Start(ctx)
+		startErrCh <- d.Start(ctx)
+		close(done)
 	}()
 
 	info, err := mtruntime.Wait(cfg.RuntimePath, 10*time.Second)
 	if err != nil {
 		cancel()
-		t.Fatalf("daemon runtime 文件未就绪: %v", err)
+		// 暴露真实的 Start 错误（若已早退），而非笼统的"runtime 未就绪"——便于定位根因。
+		select {
+		case startErr := <-startErrCh:
+			t.Fatalf("daemon 启动失败: %v（runtime 等待: %v）", startErr, err)
+		default:
+			t.Fatalf("daemon runtime 文件未就绪: %v", err)
+		}
 	}
 
 	h := &harness{
