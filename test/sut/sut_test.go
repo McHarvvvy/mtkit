@@ -203,7 +203,11 @@ func TestSM05_ReuseIdempotent(t *testing.T) {
 // ─── SM-06 优雅停止 ─────────────────────────────────────────────────────────
 
 func TestSM06_GracefulStop(t *testing.T) {
-	mgr := newManager(t, baseCfg(), bootPlan{binary: helperBin, knobs: map[string]string{"SUTHELPER_MODE": "stable"}})
+	marker := filepath.Join(t.TempDir(), "stop-marker.txt")
+	mgr := newManager(t, baseCfg(), bootPlan{
+		binary: helperBin,
+		knobs:  map[string]string{"SUTHELPER_MODE": "stable", "SUTHELPER_STOP_MARKER": marker},
+	})
 	if err := mgr.EnsureStarted(context.Background()); err != nil {
 		t.Fatalf("EnsureStarted: %v", err)
 	}
@@ -226,6 +230,11 @@ func TestSM06_GracefulStop(t *testing.T) {
 
 	if stillAlive := waitProcessGone(pid, 5*time.Second); stillAlive {
 		t.Fatalf("停止后进程 %d 仍存活", pid)
+	}
+	// 优雅路径验证：helper 收到 CTRL_BREAK（Windows）/ SIGTERM（Unix）后写出 marker——
+	// 证明走的是优雅停止，而非框架 fallback 强杀（无 console 等环境会落 fallback、无 marker）。
+	if got := pollFile(marker, 3*time.Second); got != "graceful" {
+		t.Fatalf("应走优雅停止路径（helper 写出 marker），得 marker=%q", got)
 	}
 }
 

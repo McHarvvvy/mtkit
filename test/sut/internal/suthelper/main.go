@@ -53,10 +53,15 @@ func acceptLoop(ln net.Listener) {
 	}
 }
 
-// block 阻塞直到收到终止信号。不用 select{} 是为避免 Go 运行时死锁检测 panic；
-// 框架停止时会强制终止进程树，故此处只需不主动退出。
+// block 阻塞直到收到终止信号。不用 select{} 是为避免 Go 运行时死锁检测 panic。
+//
+// 收到信号（Unix 的 SIGTERM / Windows 的 CTRL_BREAK→os.Interrupt）后，退出前写一个
+// marker——供测试断言"走的是优雅路径"（信号被接住、自行退出），区别于框架 fallback 的强杀。
 func block() {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
 	<-ch
+	if marker := os.Getenv("SUTHELPER_STOP_MARKER"); marker != "" {
+		_ = os.WriteFile(marker, []byte("graceful"), 0o644)
+	}
 }

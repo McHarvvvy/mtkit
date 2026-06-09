@@ -42,7 +42,7 @@ func TestOR10_SUTEnvCollisionRejected(t *testing.T) {
 	h := newHarness(t, regs, nil)
 
 	resp, raw := h.do(http.MethodPost, protocol.PathAcquire, protocol.AcquireReq{PID: 1})
-	if resp.StatusCode < 500 {
-		t.Fatalf("env key 冲突 acquire 期望 5xx，得 %d body=%s", resp.StatusCode, raw)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("env key 冲突 acquire 期望 500，得 %d body=%s", resp.StatusCode, raw)
 	}
 }

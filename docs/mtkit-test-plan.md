@@ -249,9 +249,9 @@ faked 迁移为机械改 import path（`faked/test/...` → `test/faked/...`）�
 | arch | `test/arch/` | 依赖方向守护 | ✅ 迁入并绿 |
 | facade | `test/facade/` | FC-01..07 | ✅ 实现并绿 |
 | orchestrator | `test/orchestrator/` | OR-01..13 | ✅ 实现并绿（进程内真实 daemon HTTP + fake 容器；经 `WithOrphanCleaner` 注入 no-op，**Docker 无关**） |
-| sut | `test/sut/` | SM-01..07 | ✅ 实现并绿（sut.Manager 边界 + helper 二进制） |
-| faked | `test/faked/` | 迁移 + FK-01..04 | ✅ 迁入并绿（FK-02 method 不匹配归因、FK-04 route_key 精确匹配） |
-| e2e | `test/e2e/`（build tag `e2e`） | E2E-1..4（E2E-3 含并发单飞） | ✅ 实现（真 redis + re-exec + 真 SUT；需 Docker 运行验证） |
+| sut | `test/sut/` | SM-01..07 | ✅ 实现并绿（sut.Manager 边界 + helper 二进制；**串行 ≈ 6s**——去掉 proc.Stop 死等后已够快；SM-06 经 marker 验证 Windows CTRL_BREAK 优雅停止生效） |
+| faked | `test/faked/` | 迁移 + FK-01..04 | ✅ 迁入并绿（FK-02 method 不匹配归因、FK-04 route_key 精确匹配；miss/error 断言精确码 502/500） |
+| e2e | `test/e2e/`（build tag `e2e`） | E2E-1..4（E2E-3 含并发单飞） | ✅ 实现（真 redis + re-exec + 真 SUT；**Docker 不可用时 fail 而非 skip**） |
 
 e2e 落地要点：
 - 真 SUT 的 gRPC 直连线在 `test/e2e/internal/echopb` + `echoendpoint` 自带一份 echo proto/endpoint
@@ -261,5 +261,9 @@ e2e 落地要点：
 - 统一执行模型：用例自驱 `kit.Run(fakeRunnable)`；`buildKitFromEnv` 经 `E2E_*` env 同时构造 client
   与 re-exec daemon 的 kit，保证两者一致。client HTTP 超时放宽到 180s，避免 acquire 期间现场构建 SUT 超时。
 
-**全部 5 层 + arch 共 ~40 个用例，全绿。** 运行：非 e2e `go test ./test/... ./faked/...`；e2e `go test -tags e2e ./test/e2e/`（需本地 Docker）。
+**全部 5 层 + arch 共 ~45 个用例，全绿。** 运行：非 e2e `go test ./test/... ./faked/...`（orchestrator 已 DI 去 Docker）；e2e `go test -tags e2e ./test/e2e/`——**e2e 经 `-tags` 显式 opt-in，Docker 不可用时 fail（非 skip），避免假绿致用例腐烂**。
+
+> 进程停止：`proc.Stop` 通过跨平台 `SignalGraceful` seam 实现优雅停止——Unix 发 SIGTERM，Windows 用 `CREATE_NEW_PROCESS_GROUP` + `GenerateConsoleCtrlEvent(CTRL_BREAK)`；信号发不出去（无 console 等）落 fallback 强杀。消除了 Windows 上每次 SUT 停止空等满 GracePeriod 的死等（生产 + 测试同时受益）。
+>
+> **sut 测试不并行**：CTRL_BREAK 是 console 控制事件，多个 SUT 共享 test 进程同一 console 时并发发送会竞争 → ~30s 卡顿。生产是单 SUT、无此并发，不受影响。去掉 dead-wait 后串行已 ≈ 6s，并行无额外收益，故保持串行以求稳健。
 ```

@@ -222,17 +222,19 @@ func daemonPID(t *testing.T, dir string) int {
 	return info.PID
 }
 
+// requireDocker 在 Docker 不可达时 fail（非 skip）。e2e 经 -tags e2e 显式 opt-in，
+// 运行即明确要求真 Docker；缺失是环境故障，应红而非 skip——skip 会假绿、致 e2e 静默腐烂。
 func requireDocker(t *testing.T) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	cli, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
 	if err != nil {
-		t.Skipf("docker unavailable: %v", err)
+		t.Fatalf("e2e requires Docker (client): %v", err)
 	}
 	defer cli.Close()
 	if _, err = cli.Ping(ctx); err != nil {
-		t.Skipf("docker daemon unavailable: %v", err)
+		t.Fatalf("e2e requires Docker (daemon): %v", err)
 	}
 }
 

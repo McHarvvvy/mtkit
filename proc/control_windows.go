@@ -16,7 +16,27 @@ import (
 var jobStore sync.Map // map[int]windows.Handle
 
 func PrepareCommand(cmd *exec.Cmd) error {
+	if cmd == nil {
+		return nil
+	}
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	// 子进程独立进程组，使 Stop 时的 CTRL_BREAK 只命中它、不波及父 daemon。
+	cmd.SysProcAttr.CreationFlags |= windows.CREATE_NEW_PROCESS_GROUP
 	return nil
+}
+
+// SignalGraceful 向 SUT 进程组发送 CTRL_BREAK，请求其优雅退出。
+//
+// 进程组 ID = 子进程 PID（PrepareCommand 设了 CREATE_NEW_PROCESS_GROUP），故事件只命中
+// SUT 子树。子进程经 signal.Notify(os.Interrupt) 收到该事件。无 console 等环境会返回
+// error，由调用方（proc.Stop）落到强制终止兜底。
+func SignalGraceful(cmd *exec.Cmd) error {
+	if cmd == nil || cmd.Process == nil {
+		return fmt.Errorf("process is nil")
+	}
+	return windows.GenerateConsoleCtrlEvent(windows.CTRL_BREAK_EVENT, uint32(cmd.Process.Pid))
 }
 
 func AfterStart(cmd *exec.Cmd) error {

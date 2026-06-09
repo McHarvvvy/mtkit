@@ -193,8 +193,11 @@ func (p *Process) Stop(ctx context.Context) error {
 	p.waitCh = nil
 	p.mu.Unlock()
 
-	if cmd.Process != nil {
-		_ = cmd.Process.Signal(os.Interrupt)
+	if err := SignalGraceful(cmd); err != nil {
+		// 优雅停止信号发不出去（典型：Windows 无 console / 平台不支持）→ 等 GracePeriod
+		// 毫无意义（进程收不到、不会优雅退出），直接强制终止，避免空等。
+		TerminateProcess(cmd, waitCh, 5*time.Second)
+		return nil
 	}
 	select {
 	case <-ctx.Done():

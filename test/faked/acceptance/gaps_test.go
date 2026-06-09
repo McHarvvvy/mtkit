@@ -73,8 +73,8 @@ func TestFK02_HTTPMethodMismatchMiss(t *testing.T) {
 		t.Fatalf("PUT via proxy: %v", err)
 	}
 	_ = resp.Body.Close()
-	if resp.StatusCode < 400 {
-		t.Fatalf("method 不匹配应 fail-loud（>=400），得 %d", resp.StatusCode)
+	if resp.StatusCode != stdhttp.StatusBadGateway {
+		t.Fatalf("method 不匹配 fail-loud 应为 502，得 %d", resp.StatusCode)
 	}
 
 	h.requireHTTPMiss(t, "method mismatch PUT /v1/login", func(ev fakedhttp.CallEvent) bool {
@@ -116,8 +116,8 @@ func TestFK04_HTTPRouteKeyExactMatch(t *testing.T) {
 	respB := doJSON(t, cl, "http://"+testendpoint.HostAccTest+testendpoint.PathLogin, fmt.Sprintf(`{"account_id":%q}`, keyB))
 	_, _ = io.ReadAll(respB.Body)
 	_ = respB.Body.Close()
-	if respB.StatusCode < 400 {
-		t.Fatalf("未注册 key B 不应被 A 的规则命中，期望 >=400，得 %d", respB.StatusCode)
+	if respB.StatusCode != stdhttp.StatusBadGateway {
+		t.Fatalf("未注册 key B 不应被 A 的规则命中，期望 502，得 %d", respB.StatusCode)
 	}
 }
 

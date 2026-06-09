@@ -26,8 +26,8 @@ func TestOR07_RollbackOnStartFailure(t *testing.T) {
 	h := newHarness(t, regs, nil)
 
 	resp, raw := h.do(http.MethodPost, protocol.PathAcquire, protocol.AcquireReq{PID: 1})
-	if resp.StatusCode < 500 {
-		t.Fatalf("启动失败 acquire 期望 5xx，得 %d body=%s", resp.StatusCode, raw)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("启动失败 acquire 期望 500，得 %d body=%s", resp.StatusCode, raw)
 	}
 	if !good.wasTerminated() {
 		t.Fatal("已起的好容器应在回滚中被终止")
@@ -55,8 +55,8 @@ func TestOR08_RollbackOnInitFailure(t *testing.T) {
 	h := newHarness(t, regs, nil)
 
 	resp, raw := h.do(http.MethodPost, protocol.PathAcquire, protocol.AcquireReq{PID: 1})
-	if resp.StatusCode < 500 {
-		t.Fatalf("Init 失败 acquire 期望 5xx，得 %d body=%s", resp.StatusCode, raw)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("Init 失败 acquire 期望 500，得 %d body=%s", resp.StatusCode, raw)
 	}
 	if !a.wasTerminated() || !b.wasTerminated() {
 		t.Fatalf("Init 失败应回滚全部容器：a.terminated=%v b.terminated=%v", a.wasTerminated(), b.wasTerminated())
