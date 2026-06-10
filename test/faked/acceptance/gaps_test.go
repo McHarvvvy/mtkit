@@ -167,7 +167,7 @@ func staticCAHarness(t testing.TB, certFile, keyFile string) *harness {
 		t.Fatalf("new static-CA engine: %v", err)
 	}
 	mux := stdhttp.NewServeMux()
-	eng.RegisterControl(mux)
+	eng.RegisterControl(mux, nil) // 进程内测试不挂鉴权中间件
 	srv := httptest.NewServer(mux)
 	addrs, err := eng.Start(context.Background())
 	if err != nil {
@@ -180,5 +180,5 @@ func staticCAHarness(t testing.TB, certFile, keyFile string) *harness {
 		defer cancel()
 		_ = eng.Stop(ctx)
 	})
-	return &harness{t: t, runtimeDir: dir, addrs: addrs, client: fakedclient.New(controlAddr(srv))}
+	return &harness{t: t, runtimeDir: dir, addrs: addrs, client: fakedclient.New(controlAddr(srv), "")}
 }

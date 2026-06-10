@@ -105,9 +105,12 @@ func New(cfg Config) (*Server, error) {
 
 // RegisterControl 把两侧 rule 注册 handler 挂到 daemon 主 mux（共用 daemon 主端口）。
 // 必须在 daemon mux 开始 Serve 之前调用。
-func (s *Server) RegisterControl(mux *nethttp.ServeMux) {
-	s.grpcCtrl.Register(mux)
-	s.httpCtrl.Register(mux)
+//
+// wrap 是 control handler 的中间件：daemon 传 withAuth 让 faked control 与 lease 共用 token
+// 鉴权（faked 自身不感知 token，鉴权策略由宿主 daemon 决定）；独立进程内测试传 nil 表示不鉴权。
+func (s *Server) RegisterControl(mux *nethttp.ServeMux, wrap func(nethttp.HandlerFunc) nethttp.HandlerFunc) {
+	s.grpcCtrl.Register(mux, wrap)
+	s.httpCtrl.Register(mux, wrap)
 }
 
 // Start 开启数据面 listener：打开调用日志 → 起 gRPC server set → 备 CA → 起 HTTP 代理。

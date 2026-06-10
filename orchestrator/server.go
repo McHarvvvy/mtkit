@@ -60,8 +60,11 @@ type Daemon struct {
 	sut         *sut.Manager
 	cleaner     OrphanCleaner // 启动前清理同名孤儿容器；默认 container.CleanupOrphans，测试经 WithOrphanCleaner 注入 no-op
 
-	startMu      sync.Mutex
-	infraStarted bool
+	// readyMu 串行化整段“环境就绪准备”（infra → faked → SUT 注入 env → SUT 进程）。
+	// 这些步骤都对 daemon 共享状态（runtimeInfo / fakedEnv / sutEnvReady）做幂等写入，
+	// 并重写同一个 runtime 文件；并发 Acquire 若不串行会产生数据竞争与 runtime 落盘互相覆盖。
+	// 容器启停的并发与幂等不在此列：由 Bundle 自身的 b.mu 负责，orchestrator 不再单设 infra 启动锁/标志。
+	readyMu sync.Mutex
 
 	shutdownOnce sync.Once
 	done         chan struct{}
@@ -168,8 +171,9 @@ func (d *Daemon) Start(ctx context.Context) error {
 	d.registerLeaseRoutes(mux)
 	if d.faked != nil {
 		// faked 内嵌：rule 注册 handler 挂 daemon 主 mux（与 lease 共用端口），必须在 Serve 之前。
-		// 无鉴权——与原独立 faked control 一致（仅面向本机测试进程）。
-		d.faked.RegisterControl(mux)
+		// 与 lease 路由共用同一把 withAuth：faked control 与 lease 在同一 daemon 端口上统一鉴权，
+		// 避免同机其它进程误调用注入 fake 规则（与段3 fixtured 的 RegisterRoutes(mux, d.withAuth) 一致）。
+		d.faked.RegisterControl(mux, d.withAuth)
 	}
 	// 段3 预留：fixtured 协调路由在此追加，与 lease 共用同一 mux / 端口 / 鉴权：
 	//   d.fixtured.RegisterRoutes(mux, d.withAuth)
@@ -216,7 +220,7 @@ func (d *Daemon) registerLeaseRoutes(mux *http.ServeMux) {
 	mux.HandleFunc(protocol.PathState, d.withAuth(d.handleState))
 }
 
-func (d *Daemon) withAuth(next func(http.ResponseWriter, *http.Request)) func(http.ResponseWriter, *http.Request) {
+func (d *Daemon) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// daemon 仅面向本机测试进程，但仍通过 token 做最小隔离，
 		// 防止同机其它进程误调用导致租约状态错乱。
@@ -244,27 +248,8 @@ func (d *Daemon) handleAcquire(w http.ResponseWriter, r *http.Request) {
 	}
 	// 关键决策：Acquire 串联“容器基础设施就绪 + 被测服务进程就绪”，
 	// 只有两者都完成才返回租约，确保用例拿到的是可用环境而非半初始化状态。
-	infraStart := time.Now()
-	if err := d.ensureInfraStarted(r.Context()); err != nil {
-		log.Printf("mtkit acquire ensure infra failed cost=%s err=%v", time.Since(infraStart), err)
-		writeError(w, http.StatusInternalServerError, protocol.ErrCodeInternal, err.Error())
-		return
-	}
-	fakedStart := time.Now()
-	if err := d.ensureFakedStarted(r.Context()); err != nil {
-		log.Printf("mtkit acquire ensure faked failed cost=%s err=%v", time.Since(fakedStart), err)
-		writeError(w, http.StatusInternalServerError, protocol.ErrCodeInternal, err.Error())
-		return
-	}
-	// 容器 + faked 就绪后组装注入 SUT 的全部 env（容器连接 + faked 连接），并落盘 sut_env。
-	if err := d.prepareSUTEnv(r.Context()); err != nil {
-		log.Printf("mtkit acquire prepare sut env failed err=%v", err)
-		writeError(w, http.StatusInternalServerError, protocol.ErrCodeInternal, err.Error())
-		return
-	}
-	appStart := time.Now()
-	if err := d.ensureSUTStarted(r.Context()); err != nil {
-		log.Printf("mtkit acquire ensure sut failed cost=%s err=%v", time.Since(appStart), err)
+	// 整段就绪准备在 ensureEnvReady 内持 readyMu 串行化（见其注释），并发 Acquire 互斥。
+	if err := d.ensureEnvReady(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, protocol.ErrCodeInternal, err.Error())
 		return
 	}

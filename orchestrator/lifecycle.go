@@ -4,40 +4,61 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	mtconstant "github.com/McHarvvvy/mtkit/constant"
 	mtfaked "github.com/McHarvvvy/mtkit/faked"
 	mtruntime "github.com/McHarvvvy/mtkit/runtime"
 )
 
-func (d *Daemon) ensureInfraStarted(ctx context.Context) error {
-	// 关键决策：基础设施启动入口串行化，避免同一 daemon 被并发 Acquire 重复拉容器。
-	d.startMu.Lock()
-	defer d.startMu.Unlock()
-	if d.infraStarted {
-		return nil
-	}
-	err := d.bundle.StartAll(ctx)
-	if err != nil {
-		log.Printf("mtkit ensureInfraStarted failed: %v", err)
+// ensureEnvReady 串行化整段环境就绪准备：容器 infra → faked → SUT 注入 env → SUT 进程。
+//
+// 关键决策：整段持 readyMu。各步都对 daemon 共享状态（runtimeInfo / fakedEnv / sutEnvReady）
+// 做幂等写入并可能重写同一个 runtime 文件；并发 Acquire 若不串行会产生数据竞争与落盘互相覆盖。
+// 首个 Acquire 完成首次启动后，后续 Acquire 在锁内只是快速走幂等空过——锁不发放租约，发放在锁外。
+// 容器启停的并发与幂等由 Bundle 自身的锁负责（StartAll/StopAll 共用 b.mu），故此处无需再叠加 infra 锁。
+func (d *Daemon) ensureEnvReady(ctx context.Context) error {
+	d.readyMu.Lock()
+	defer d.readyMu.Unlock()
+
+	infraStart := time.Now()
+	if err := d.ensureInfraStarted(ctx); err != nil {
+		log.Printf("mtkit acquire ensure infra failed cost=%s err=%v", time.Since(infraStart), err)
 		return err
 	}
-	d.infraStarted = true
+	fakedStart := time.Now()
+	if err := d.ensureFakedStarted(ctx); err != nil {
+		log.Printf("mtkit acquire ensure faked failed cost=%s err=%v", time.Since(fakedStart), err)
+		return err
+	}
+	// 容器 + faked 就绪后组装注入 SUT 的全部 env（容器连接 + faked 连接），并落盘 sut_env。
+	if err := d.prepareSUTEnv(ctx); err != nil {
+		log.Printf("mtkit acquire prepare sut env failed err=%v", err)
+		return err
+	}
+	appStart := time.Now()
+	if err := d.ensureSUTStarted(ctx); err != nil {
+		log.Printf("mtkit acquire ensure sut failed cost=%s err=%v", time.Since(appStart), err)
+		return err
+	}
 	return nil
 }
 
-func (d *Daemon) stopContainersOnly(ctx context.Context) error {
-	d.startMu.Lock()
-	defer d.startMu.Unlock()
-	if !d.infraStarted {
-		return nil
-	}
-	// 与 ensureInfraStarted 共享同一把锁，确保不会出现“边启动边停止”的交叉状态。
-	if err := d.bundle.StopAll(ctx); err != nil {
+// ensureInfraStarted 启动容器基础设施（幂等）。并发与幂等由 Bundle 自身的锁与 started 标志保证，
+// 故 orchestrator 不再重复维护启动标志：Acquire 路径整体在 readyMu 下串行，与停止路径经 Bundle
+// 同一把 b.mu 互斥（StartAll/StopAll 不会交叉）。
+func (d *Daemon) ensureInfraStarted(ctx context.Context) error {
+	if err := d.bundle.StartAll(ctx); err != nil {
+		log.Printf("mtkit ensureInfraStarted failed: %v", err)
 		return err
 	}
-	d.infraStarted = false
 	return nil
+}
+
+// stopContainersOnly 停止容器基础设施；幂等性与“边启边停”互斥由 Bundle 的 b.mu 保证
+// （StopAll 与 StartAll 共用同一把锁，未启动时为安全空操作）。
+func (d *Daemon) stopContainersOnly(ctx context.Context) error {
+	return d.bundle.StopAll(ctx)
 }
 
 func (d *Daemon) ensureSUTStarted(ctx context.Context) error {

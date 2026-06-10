@@ -35,6 +35,25 @@ func TestArchDependencyDirection(t *testing.T) {
 			forbidden: []string{mod + "/orchestrator", mod + "/container", mod + "/client"},
 		},
 		{
+			// faked 是被 orchestrator 托管的服务端，不得反向依赖编排 / 容器 / sut / 客户端。
+			name:      "faked 不得反向依赖编排 / 容器 / sut / 客户端",
+			pkgs:      mod + "/faked/...",
+			forbidden: []string{mod + "/orchestrator", mod + "/container", mod + "/sut", mod + "/client"},
+		},
+		{
+			// client/fake 只能经 protocol 子包与 faked 对话，不得拽服务端实现（actions / routekey / ca）
+			// 进测试 binary。注意：不能直接禁 faked/grpc、faked/http 或 faked——前缀匹配会误伤合法的
+			// faked/grpc/protocol、faked/http/protocol；改禁服务端叶子实现包，误 import 服务端入口会
+			// 传递拉进它们，照样被逮到。
+			name: "client/fake 只依赖 protocol，不碰 faked 服务端实现",
+			pkgs: mod + "/client/fake/...",
+			forbidden: []string{
+				mod + "/orchestrator", mod + "/container", mod + "/sut",
+				mod + "/faked/grpc/actions", mod + "/faked/grpc/routekey",
+				mod + "/faked/http/actions", mod + "/faked/http/routekey", mod + "/faked/http/ca",
+			},
+		},
+		{
 			name:      "runtime 是 leaf",
 			pkgs:      mod + "/runtime/...",
 			forbidden: []string{mod + "/orchestrator", mod + "/container", mod + "/sut", mod + "/client", mod + "/fixtured", mod + "/faked"},

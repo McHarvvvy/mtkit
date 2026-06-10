@@ -18,6 +18,12 @@ type startResult struct {
 }
 
 // Bundle 负责测试容器资源生命周期。
+//
+// 契约：本 bundle 假定注册的容器【相互独立】——StartAll 并发启动、不保证注册顺序即启动顺序，
+// 故容器不得依赖另一容器“先就绪”。需要容器间初始化关系（建库、写种子）的，放到 Init：
+// Init 在所有容器启动后串行执行，可经闭包捕获访问任意已启动容器。停止按注册逆序，仅是礼貌性
+// 收尾（后注册的通常更外围），不承诺依赖拓扑语义。若将来出现真正的容器间启动依赖，应显式引入
+// 阶段/依赖模型，而非依赖这里的隐式顺序。
 type Bundle struct {
 	mu      sync.Mutex
 	started bool
@@ -223,7 +229,7 @@ func (b *Bundle) startAllContainers(ctx context.Context, regs []ContainerRegistr
 
 func terminateCreatedContainers(ctx context.Context, regs []ContainerRegistration, containers map[string]testcontainers.Container) error {
 	var firstErr error
-	// 关键决策：按逆序停止，尽量贴近依赖拓扑。
+	// 容器假定相互独立（见 Bundle 契约）；逆序停止仅为礼貌性收尾，不承诺依赖语义。
 	for i := len(regs) - 1; i >= 0; i-- {
 		ctr, ok := containers[regs[i].Name]
 		if !ok || ctr == nil {
@@ -238,7 +244,7 @@ func terminateCreatedContainers(ctx context.Context, regs []ContainerRegistratio
 
 func (b *Bundle) stopAllContainers(ctx context.Context) error {
 	var firstErr error
-	// 关键决策：按逆序停止，尽量贴近依赖拓扑（后启动的通常更依赖前置服务）。
+	// 容器假定相互独立（见 Bundle 契约）；逆序停止仅为礼貌性收尾，不承诺依赖语义。
 	for i := len(b.cleanup) - 1; i >= 0; i-- {
 		ctr := b.cleanup[i]
 		if ctr == nil {

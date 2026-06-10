@@ -25,8 +25,13 @@ func NewControlHandler(store *RuleStore, methods *MethodRegistry) *ControlHandle
 
 // Register 把本协议的 control API 路由挂到 daemon 提供的 mux 上。
 // URL 路径仍归属本包——daemon 无需硬编码协议 path 字符串。
-func (h *ControlHandler) Register(mux *nethttp.ServeMux) {
-	mux.HandleFunc("POST /v1/grpc/rules", h.handleRegister)
+// wrap 非 nil 时包住 handler（宿主用它注入鉴权等中间件）；nil 表示直接挂载。
+func (h *ControlHandler) Register(mux *nethttp.ServeMux, wrap func(nethttp.HandlerFunc) nethttp.HandlerFunc) {
+	handler := nethttp.HandlerFunc(h.handleRegister)
+	if wrap != nil {
+		handler = wrap(handler)
+	}
+	mux.HandleFunc("POST /v1/grpc/rules", handler)
 }
 
 // handleRegister 处理单条 rule 注册请求。

@@ -1,6 +1,12 @@
 # Fixture 层设计（落地）
 
-> **【命名映射】** 总模块 `mtkit`（daemon = `mtkitd`）。本文旧名按此读：`fixturebase` → 客户端包 **`client/fixture`**（包名 `fixture`，在 `client/` 下）；协调内核 `coord` → 服务端 **`fixtured`**（与 lease 共用 daemon 主端口、非独立服务）。权威以 `mtkit-migration-plan.md` 为准。
+> **【命名映射】** 总模块 `mtkit`（module path `github.com/McHarvvvy/mtkit`）。**daemon 不是独立的 `mtkitd` 二进制**——它是测试二进制自身经 re-exec、以 `MTKIT_RUN_MODE=daemon` 进入的 daemon 模式（实现 `orchestrator.Daemon`）。本文旧名按此读：`fixturebase` → 客户端包 **`client/fixture`**（包名 `fixture`，在 `client/` 下）；协调内核 `coord` → 服务端 **`fixtured`**（与 lease 共用 daemon 主端口、非独立服务）。权威以 `mtkit-migration-plan.md` 为准。
+
+> **【落地现状 · 2026-06】** 段1（testcontainerd → mtkit 迁移）与段2（`proc` 抽出 + faked 内嵌 daemon）**均已完成**，本文的诸多「依赖前提」已是既成事实：
+> - **入口非 `bootstrap.Run`**：测试 `TestMain` 经 `mtkit.New(project, cfg).RegisterContainers(...).RegisterSUT(...).Run(m)` 启动；本文出现的 `bootstrap.Run` 是占位写法，**provision 接缝尚未接入该入口**，是段3 待落地点（见 §1）。
+> - **faked 已内嵌 daemon 主进程**（非独立 `cmd/faked` 子进程）：control 面（`/v1/grpc/rules`、`/v1/http/rules`）挂 daemon 主 mux、与 lease 共用端口**及同一 token 鉴权**（daemon 经 `RegisterControl(mux, d.withAuth)` 注入，与 fixtured 一致）；数据面（gRPC endpoint / HTTP 代理）自有 listener 但同进程；rule 生命周期 == daemon 生命周期。测试侧用 `client/fake`（`fake.New(controlAddr, token)`，`controlAddr`/`token` = `mtkit.runtime.json` 的 `addr`/`token`）注册 rule。
+> - **runtime 发现已具体**：`runtime` 包 + `RuntimeInfo`（`addr`/`token`/`pid`/`faked`/`sut_env`），落盘于 `<tmp>/mt/<project>/mtkit.runtime.json`。
+> - **fixtured 接缝已预留**：`orchestrator/server.go` 已留挂载点 `d.fixtured.RegisterRoutes(mux, d.withAuth)`（与 lease 共用主 mux）；`client/fixture` 与 `fixtured` 当前仅占位 `doc.go`——**本文 §2 起的接口与机制即段3 待落地内容**。
 
 本文是 fixture 层的**落地设计**：通用基座 `client/fixture` 的接口与机制，以及项目侧如何在其上扩展。它补的是另三份文档之间的 GAP：
 
@@ -16,8 +22,10 @@
 ## 1. 数据流（把 fixture 串进 daemon / fixtured）
 
 ```text
-TestMain：bootstrap.Run(m, schema.NotifyStore())
-  → daemon 就绪（doc A §2/§4）→ 按包 provision（fixtured 锁 + registry + Apply，doc A §6）
+TestMain（现状入口）：mtkit.New(project, cfg).RegisterContainers(...).RegisterSUT(...).Run(m)
+  → re-exec daemon（MTKIT_RUN_MODE=daemon）就绪（doc A §2/§4）
+  → 〔段3 待接〕按包 provision（fixtured 锁 + registry + Apply，doc A §6）；
+     provision 接缝须挂进上面这条入口（传入 schema.NotifyStore()），目前尚无 bootstrap.Run
 
 用例体（client 模式）：
   fx := scope.New(t)                         // 分配本用例 PrimaryScope 值（唯一性内部自给，调用者无感）
@@ -29,7 +37,7 @@ TestMain：bootstrap.Run(m, schema.NotifyStore())
 ```
 
 - **provision、写数据都在测试进程**（DDL / seed 直连，fixtured 只给「锁 + 账本 + 发号」），见 doc A §4.3/§6。
-- **fake rule 生命周期**：daemon 形态下 rule 留存到 daemon 退出、靠 route_key 全局唯一隔离（faked-design §15），**无需 per-case cleanup**——与"不提供业务数据清理"的分桶纪律一致（框架文档 §8.3）。
+- **fake rule 生命周期**：faked 已内嵌 daemon 主进程，rule 注册经 daemon 主端口（`client/fake` → `/v1/{grpc,http}/rules`），留存到 daemon 退出、靠 route_key 全局唯一隔离（faked-design §15），**无需 per-case cleanup**——与"不提供业务数据清理"的分桶纪律一致（框架文档 §8.3）。
 
 ---
 
@@ -56,8 +64,14 @@ func Requirements(reqs ...Requirement) Requirement
 func NotifyStore() client/fixture.Requirement {
     return client/fixture.Requirements(UserStore(), MySQLTables("user_notify", "user_notify_setting"), RedisProfiles("notify"))
 }
-// 测试包 TestMain 显式传入本包所需
-func TestMain(m *testing.M) { os.Exit(bootstrap.Run(m, schema.NotifyStore())) }
+// 测试包 TestMain 显式传入本包所需。
+// 现状入口是 mtkit.New(...).Run(m)；段3 需为其增加 provision 接缝（下例 WithSchema 为待定命名）：
+func TestMain(m *testing.M) {
+    os.Exit(mtkit.New(project, cfg).
+        RegisterContainers(...).
+        WithSchema(schema.NotifyStore()). // 〔段3 待加〕：Run 前驱动 Provision
+        Run(m))
+}
 ```
 
 **两层**（doc A §6）：① SUT 启动必需的库 / tenant / 配置 → daemon `Init` 全局引导；② 测试用表 / topic → 按包 provision。provision 流程（`fixtured.WithLock → 查 registry → 缺则 Apply → MarkApplied`）由 `client/fixture` 驱动、在测试进程跑，详见 doc A §6。`Registry`（锁 + 已应用账本的抽象）接口定义在 `client/fixture`，由 fixtured client（daemon 内存后端）实现。
@@ -194,7 +208,7 @@ func (s *CaseScope) BindToScope(field, value string)  // 仅登记"外来"唯一
 
 具体 helper 属项目（框架文档 §7.5/§7.6）；`client/fixture` 提供底座：
 
-- **runtime 发现**：读 runtime 文件（doc A §4.3）拿容器地址、faked 地址 / 代理 / CA、fixtured control 地址，构造 DB / Redis / Mongo / HTTP / gRPC 连接。
+- **runtime 发现**（现状已具体）：读 `mtkit.runtime.json`（`runtime` 包 + `RuntimeInfo`）——`addr`（daemon 主端口，lease / faked control / 段3 fixtured control 共用）、`sut_env`（容器连接信息，如 `REDIS_ADDR`，由 daemon 注入 SUT 后落盘）、`faked`（代理 / CA 调试可见性），据此构造 DB / Redis / Mongo / HTTP / gRPC 连接。
 - `request` 在此上封装签名、网关 header、token、region 等；`observe` 在此上封装 SQL / key / filter。两者默认只依赖 uid / token 等基础字段，不依赖复杂业务对象（框架文档 §7.5）。
 
 ---

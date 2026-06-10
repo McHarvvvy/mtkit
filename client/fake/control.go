@@ -16,6 +16,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	mtconstant "github.com/McHarvvvy/mtkit/constant"
 )
 
 // apiEnvelope 是 control API 响应包装；与服务端 control handler writeOK/writeError 对齐。
@@ -39,12 +41,14 @@ type Client struct {
 	http     *httpClient
 }
 
-// New 用 daemon 的 control 地址创建 Client。
+// New 用 daemon 的 control 地址与 token 创建 Client。
 //
 // controlAddr 即 mtkit.runtime.json 的 control_addr（faked rule 注册与 lease /
-// fixtured 共用 daemon 主端口）；由项目 bootstrap 读出后传入，本包不做发现。
-func New(controlAddr string) *Client {
-	return &Client{ctrl: newControl(controlAddr)}
+// fixtured 共用 daemon 主端口）；token 即 runtime 文件的 token，与 lease 共用同一鉴权。
+// 二者均由项目 bootstrap 从 runtime 文件读出后传入，本包不做发现。token 为空时不带鉴权头
+// （供进程内、control 未挂鉴权中间件的测试直连使用）。
+func New(controlAddr, token string) *Client {
+	return &Client{ctrl: newControl(controlAddr, token)}
 }
 
 // GRPC 返回 gRPC rule 注册命名空间。
@@ -70,12 +74,14 @@ func (c *Client) Addr() string { return c.ctrl.addr }
 // 只关心：POST JSON → 解码统一错误体。不感知具体协议（gRPC / HTTP）。
 type control struct {
 	addr   string
+	token  string
 	client *http.Client
 }
 
-func newControl(addr string) *control {
+func newControl(addr, token string) *control {
 	return &control{
 		addr:   addr,
+		token:  token,
 		client: &http.Client{Timeout: 10 * time.Second},
 	}
 }
@@ -95,6 +101,9 @@ func (c *control) post(ctx context.Context, path string, in any, out any) error 
 		return fmt.Errorf("faked client: build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set(mtconstant.HeaderToken, c.token)
+	}
 
 	resp, err := c.client.Do(req)
 	if err != nil {

@@ -1,6 +1,11 @@
 # Fixture 实现方案（落地）
 
-> **【命名映射】** 总模块 `mtkit`（daemon = `mtkitd`）。本文旧名按此读：`fixturebase` → 客户端包 **`client/fixture`**（包名 `fixture`，在 `client/` 下）；协调内核 `coord` → 服务端 **`fixtured`**（与 lease 共用 daemon 主端口、非独立服务）。权威以 `mtkit-migration-plan.md` 为准。
+> **【命名映射】** 总模块 `mtkit`（module path `github.com/McHarvvvy/mtkit`）。**daemon 不是独立的 `mtkitd` 二进制**——它是测试二进制经 re-exec、以 `MTKIT_RUN_MODE=daemon` 进入的 daemon 模式（实现 `orchestrator.Daemon`）。本文旧名按此读：`fixturebase` → 客户端包 **`client/fixture`**（包名 `fixture`，在 `client/` 下）；协调内核 `coord` → 服务端 **`fixtured`**（与 lease 共用 daemon 主端口、非独立服务）。权威以 `mtkit-migration-plan.md` 为准。
+
+> **【落地现状 · 2026-06】** §4 落地顺序里的**阶段1、阶段2 均已完成**，本文按「全部待做」写的部分须据此重读：
+> - **阶段1（拆分 mtkit）已完成**：`orchestrator` / `container` / `sut` / `runtime` / `constant` 已就位；daemon 经 re-exec 运行。§6 列的「阶段1 spike」（内嵌 listener / 监督子进程 / `Serve()`）已被现实解答——daemon 在主 mux 上挂 faked control（内嵌 listener 成立）、经 `proc` 监督 SUT 子进程并整树终止（监督成立）；常驻 `Serve()` 按计划仅 spike、未落地。
+> - **阶段2（`proc` 抽出 + faked 集成）已完成，但实现与本文原描述不同**：faked **内嵌 daemon 主进程**（非「daemon 监督的 `cmd/faked` 子进程」），control 挂 daemon 主端口；进程监督引擎已抽为 `proc` 包，导出类型为 **`proc.Process` / `proc.Spec`**（本文旧称 `ManagedProcess`），且**仅 SUT 是其实例**，faked 不走 `proc`。详见 `faked-integration-plan.md`。
+> - **剩余即阶段3**：`fixtured` 协调原语（`AllocIDBlock` / `WithLock` / registry）+ `client/fixture`（当前两者仅占位 `doc.go`）。daemon 侧挂载接缝已在 `orchestrator/server.go` 预留：`d.fixtured.RegisterRoutes(mux, d.withAuth)`。
 
 本文讲 **fixture 怎么写代码**：包布局、依赖接缝、各层接口签名、落地顺序、自测策略。设计依据见 `fixture-design.md`（doc B）、`test-harness-design.md`（doc A）。读者：实现者。
 
@@ -60,12 +65,13 @@ type PersistEnv interface {
     Redis() redis.UniversalClient
     Mongo() *mongo.Client
 }
-// 实现：从 runtime 文件解析地址构造（参照 faked client 的 runtime 发现）
+// 实现：读 mtkit.runtime.json（runtime 包 + RuntimeInfo）构造；
+// 容器连接地址在 RuntimeInfo.SUTEnv（如 REDIS_ADDR，daemon 注入 SUT 后落盘）
 ```
 
 - `tokenSource` 是**内部接缝**（小写、不导出）：`CaseScope` 内部持有它，但**它不进任何公共 API**——生成器都做成 `CaseScope` 方法、唯一性内部自给（doc B §3.2）。生产唯一实现是 fixtured client；接口只为纯逻辑单测留 fake 点。
 - **没有 `FakeBinder` 接缝**：隔离守卫不是可替换后端（只有"进程内 set"一种实现），且 base 不该依赖 faked client。绑定集就是 `CaseScope` 的普通状态（自动追踪生成值）；守卫 `AssertBound` 在**项目注册接缝**调用（doc B §4）。
-- `PersistEnv` 后端只需 runtime 文件（faked 已有同款发现逻辑可参照）。
+- `PersistEnv` 后端只需 `mtkit.runtime.json`：`runtime` 包已提供 `Read` + `RuntimeInfo`（`addr` / `token` / `sut_env` / `faked`），直接复用，无需另写发现逻辑。
 
 ---
 
@@ -148,7 +154,7 @@ func Provision(ctx context.Context, reg Registry, env Env, req Requirement) erro
 // 内部：去重 → 对每个 Resource：reg.WithLock(Key) { if !Applied: Apply; MarkApplied }
 ```
 
-项目侧 `schema.NotifyStore()` 等返回 `Requirement`；`bootstrap.Run` 调 `Provision`（doc B §2）。
+项目侧 `schema.NotifyStore()` 等返回 `Requirement`；段3 须在现状入口 `mtkit.New(...).Run(m)` 上增加接缝（如 `WithSchema(...)`，命名待定）在 daemon 启动后、用例运行前驱动 `Provision`（doc B §2）。**当前无 `bootstrap.Run`**，本文出现处均按此读。
 
 ---
 
@@ -156,17 +162,17 @@ func Provision(ctx context.Context, reg Registry, env Env, req Requirement) erro
 
 三大阶段，对齐 doc A 演进；每阶段在动手前先验证其最高风险假设。
 
-**阶段 1：拆分 `mtkit`（容器控制 vs 中心 daemon）**
+**阶段 1：拆分 `mtkit`（容器控制 vs 中心 daemon）** ✅ 已完成
 
-- **先 spike 验证可扩展性**（doc A §11 待核实）：daemon 进程内能否额外跑一个 HTTP listener、监督 SUT 之外的子进程、提供非 re-exec 的常驻 `Serve()`。证实再动大手术。
-- 把"容器管理"从"daemon shell / 编排"中拆出（doc A §3 的 `container/` vs `orchestrator/`）；fixtured 仅留空壳（HTTP listener 挂载点），原语在阶段 3 填。
+- spike 已被现实解答：daemon 进程内确可额外跑 HTTP listener（faked control 挂主 mux）、监督 SUT 之外的子进程（`proc` 监督 + 整树终止）；非 re-exec 常驻 `Serve()` 仅 spike、未落地。
+- "容器管理" 已从 "daemon shell / 编排" 拆出（`container/` vs `orchestrator/`）；fixtured 挂载点已在 `orchestrator/server.go` 预留（`d.fixtured.RegisterRoutes(mux, d.withAuth)`），原语在阶段 3 填。
 
-**阶段 2：进程监督泛化 + faked 子进程集成**
+**阶段 2：进程监督泛化 + faked 集成** ✅ 已完成（实现与原计划不同）
 
-- 把现有"单 SUT 托管"泛化为 `ManagedProcess`（doc A §4.1）：`Build/Start/Ready/Stop` + 依赖序 + 可插拔就绪（SUT 走 TCP 探活、faked 走 runtime 文件落盘）。
-- faked 从"测试进程 fork"改为"daemon 监督的 `cmd/faked` 子进程"（单例、修 runtime.json 竞争 bug）；接入 reload。
+- 现有 "单 SUT 托管" 已泛化为 `proc` 包的 **`proc.Process` / `proc.Spec`**（本文旧称 `ManagedProcess`）：`Build/Command/Ready/Stop` + 可插拔就绪（`ReadyTCP` / `ReadyFileThenTCP`）。
+- **修订**：faked 未做成 "daemon 监督的 `cmd/faked` 子进程"，而是**内嵌 daemon 主进程**（control 挂主端口、数据面自有 listener、随 daemon 生命周期）；因此 faked **不走 `proc`**，`proc` 当前唯一实例是 SUT。原 "修 runtime.json 竞争 / 接入 reload / 子进程单例" 诸点随内嵌方案作废。理由见 `faked-integration-plan.md` §0.4。
 
-**阶段 3：fixtured 控制原语 + client/fixture（直接在 umbrella）+ 项目侧打样**
+**阶段 3：fixtured 控制原语 + client/fixture（直接在 umbrella）+ 项目侧打样** ⬅ 剩余工作
 
 | 步 | 内容 | 依赖 |
 |---|---|---|
@@ -194,7 +200,7 @@ func Provision(ctx context.Context, reg Registry, env Env, req Requirement) erro
 
 ## 6. 待决 / 风险
 
-- **阶段 1 spike 是总前提**：若 `mtkit` 的 daemon 扩不动（多子进程监督 / 内嵌 listener / 非 re-exec `Serve()`），整套架构假设需调，越早暴露越好——故 spike 排在最前。
+- ~~**阶段 1 spike 是总前提**~~（已解除）：daemon 内嵌 listener + 监督子进程已由阶段1/2 落地验证（faked control 挂主 mux、`proc` 监督 SUT 并整树终止）；唯 "非 re-exec 常驻 `Serve()`" 未落地，但段3 不依赖它，故不再是阻塞前提。
 - **`PersistEnv` 连接复用**：每测试包一个进程，连接池在进程内建一次即可；注意 `t.Cleanup` 不关共享连接（随进程退出）。
 - **shaper 的紧格式**：定长 uid 的 `UniqueInt(digits)` 位预算，token 单调增、压力测试时留意是否单射溢出（doc B §7）。
 - **首批打样域**：建议 notify（已有 `api-test-framework-design.md` 范例 + schema 声明示例），验证阶段 3 全链路后再铺其他域。

@@ -87,7 +87,8 @@ func runWithSharedEngine(m *testing.M) (int, error) {
 	sharedRuntimeDir = dir
 	sharedAddrs = addrs
 	sharedControlAddr = controlAddr(srv)
-	sharedClient = fakedclient.New(sharedControlAddr)
+	// 进程内 control 未挂鉴权（RegisterControl 传 nil），故 token 留空。
+	sharedClient = fakedclient.New(sharedControlAddr, "")
 
 	return m.Run(), nil
 }
@@ -104,7 +105,7 @@ func startEngine(runtimeDir string) (*faked.Server, faked.Addrs, *httptest.Serve
 		return nil, faked.Addrs{}, nil, fmt.Errorf("new engine: %w", err)
 	}
 	mux := stdhttp.NewServeMux()
-	eng.RegisterControl(mux)
+	eng.RegisterControl(mux, nil) // 进程内测试不挂鉴权中间件
 	srv := httptest.NewServer(mux)
 	addrs, err := eng.Start(context.Background())
 	if err != nil {
@@ -153,7 +154,7 @@ func newIsolatedHarness(t testing.TB) *harness {
 		defer cancel()
 		_ = eng.Stop(ctx)
 	})
-	return &harness{t: t, runtimeDir: dir, addrs: addrs, client: fakedclient.New(controlAddr(srv))}
+	return &harness{t: t, runtimeDir: dir, addrs: addrs, client: fakedclient.New(controlAddr(srv), "")}
 }
 
 // caseKeySeq 给 caseKey 提供进程内单调递增的后缀，保证同名测试重复执行不撞 RuleKey。

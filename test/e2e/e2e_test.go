@@ -42,7 +42,8 @@ func TestE2E1_FullStack(t *testing.T) {
 
 	var pingOut, grpcOut, httpsOut string
 	code := mustBuildKit(t).Run(fakeRunnable{fn: func() int {
-		fc := fakedclient.New(controlAddr(t, dir))
+		ctrlAddr, ctrlToken := controlAddr(t, dir)
+		fc := fakedclient.New(ctrlAddr, ctrlToken)
 		key := "e2e-key"
 
 		// gRPC 直连线规则。
@@ -218,13 +219,14 @@ func TestE2E4_IdleCleanup(t *testing.T) {
 
 // ─── 用例内工具 ─────────────────────────────────────────────────────────────
 
-func controlAddr(t *testing.T, dir string) string {
+// controlAddr 从 runtime 文件取 faked control 的地址与 token；token 与 lease 共用同一鉴权。
+func controlAddr(t *testing.T, dir string) (string, string) {
 	t.Helper()
 	info, err := mtruntime.Read(runtimeFile(dir))
 	if err != nil {
 		t.Fatalf("read runtime for control addr: %v", err)
 	}
-	return info.Addr
+	return info.Addr, info.Token
 }
 
 func sutTrigger(t *testing.T, ctrlAddr, path, key string) string {
