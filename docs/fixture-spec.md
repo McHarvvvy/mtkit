@@ -9,11 +9,11 @@
 ## 章节 roadmap
 
 - **§1 唯一性引擎** — 已定稿（本轮）。
-- §2 L0 接线：`fixtured` 服务端原语 + `client/fixture` 客户端发现 —（待讨论）
+- **§2 L0 接线：`fixtured` 服务端原语 + `client/fixture` 客户端发现** — 已定稿（本轮）。
 - §3 provision：schema 声明 + `Registry`（锁/账本）+ 入口接缝 —（待讨论）
 - §4 seeder / recipe 原语 —（待讨论）
 - §5 request / observe 底座 —（待讨论）
-- §6 CaseScope / PrimaryScope / `AssertBound` 隔离守卫 —（待讨论）
+- §6 CaseScope / PrimaryScope / `AssertBound` 隔离守卫 — **不做**（隔离守卫过度设计，已确认取消）
 
 ---
 
@@ -178,7 +178,7 @@ const ( AlphaNum Charset = iota /* 62 */; Lower /* 26 */; Upper /* 26 */; Hex /*
 
 ```text
 第 1 层  唯一载荷   UniqueString / UniqueHex / UniqueInt        ← 携带全部唯一性（§1.4）
-第 2 层  塑形       UUID / UUIDDashed / Email / Phone …          ← 纯格式，复用第 1 层载荷
+第 2 层  塑形       UUID / UUIDNoDash / Email / Phone …          ← 纯格式，复用第 1 层载荷
 ```
 
 ```go
@@ -188,19 +188,20 @@ func (s *CaseScope) UniqueHex(n int) string                  // = UniqueString(n
 func (s *CaseScope) UniqueInt(digits int) int64              // [0,10^digits) 内单射，返回数值
 
 // 第 2 层（塑形）
-func (s *CaseScope) UUID() string        { return s.UniqueHex(32) }   // 32 hex，无 v4 语义（meross 风格）
-func (s *CaseScope) UUIDDashed() string                                // 同一 32-hex 载荷插 8-4-4-4-12
-func (s *CaseScope) Email() string                                     // "u" + 载荷 + "@mtkit.test"
-func (s *CaseScope) EmailFrom(seed string) string                      // seed + "+" + 载荷 + "@..."
-func (s *CaseScope) Phone(country string) string                       // 载荷塑形进国内号段
+func (s *CaseScope) UUID() string                                      // RFC 4122 v4 标准带短线格式（36字符）；内部消耗 UniqueHex(30)，每次调用产出独立标识符
+func (s *CaseScope) UUIDNoDash() string                                // RFC 4122 v4 紧凑无短线格式（32字符）；内部消耗 UniqueHex(30)，与 UUID() 相互独立
+func (s *CaseScope) Email() string                                     // "fixture+" + 载荷 + "@mtkit.test"（.test 为 RFC 2606 测试保留 TLD）
+func (s *CaseScope) EmailFrom(seed string) string                      // seed 须为合法 email；输出 {local}+{载荷}@{domain}，local part 原样保留；非法格式 panic
+func (s *CaseScope) Phone(country string) string                       // E.164 格式（如 +8613812345678）；country 为 ISO 3166-1 alpha-2；初始支持 CN/US/GB/DE/FR/JP/IT/CA；不支持则 panic
 
 // 确定性变换 / 时钟：无唯一性、无 token → 自由函数
 func Sha256Hex(s string) string
 func EpochSeconds() int64 ; func EpochMillis() int64
 ```
 
-- **UUID 锁定为 32 hex（无 v4 version/variant 语义）**；dashed 仅插短线 ⇒ 36 字符。
-- **复合字段一律"单载荷 + 塑形"**，不做分段独立发号（如 dashed UUID = 1 个 32-hex 载荷 + 插线，而非 5 段各自发号）。
+- **UUID 为 RFC 4122 v4**：version nibble 固定 `4`、variant nibble 固定 `a`，两者插入 `UniqueHex(30)` 的固定位置，剩余 30 个 hex 位承载唯一性（属 ① 档，2^120 > 2^63）。`UUID()` 与 `UUIDNoDash()` 各消耗独立 token，产出两个不同标识符；不存在"同一标识符两种格式"语义。
+- **项目自有 32-hex 标识符（如 meross 设备 ID）不命名为 UUID**：若只需"与 UUID 等长的唯一 hex 串"且不要求 v4 合规，用 L1 的 `UniqueHex(32)` 直接生成，不经 L2 UUID 入口。
+- **复合字段一律"单载荷 + 塑形"**，不做分段独立发号（如 UUID = UniqueHex(30) 输出 + 插入固定 version/variant 位）。
 - 项目自有格式（`guid` 排布、`order_id` 方案、加密对象）在项目层用第 1 层载荷自行塑形，不进 `client/fixture`。
 
 ## 1.7 唯一性代价契约（静默全函数）
@@ -220,9 +221,34 @@ func EpochSeconds() int64 ; func EpochMillis() int64
 
 ## 1.8 并发与生命周期
 
-- **进程内 `tokenSource` 单例 + `mu`**：覆盖 `t.Parallel()` 并发用例 / goroutine 抢号与补块边界。
-- **`CaseScope` per-case**（`New(t)`）：持有进程级 `tokenSource` 句柄 + 存 `t`（供基建错误 fail-loud + 自动追踪生成值，见 §6 守卫）。
-- **可复现性**：token→值的映射是确定的；但 token 的**分配顺序依赖调度**（并行），故跨运行不保证同一字段拿到同一值。**断言用对象字段、不用字面值**。
+### 两层并发保证
+
+- **第一层 · 跨进程（daemon `Allocator`）**：多个 test 包进程（`go test ./...` 并发跑各包）同时向 daemon 请求区块；daemon 内 `Allocator` 用 `atomic.Int64` FetchAdd 串行化，每个进程拿到的 `[start, end)` 不相交，**跨进程 token 全局唯一**。
+- **第二层 · 进程内（`blockSource.mu`）**：同进程内多个 `t.Parallel()` 用例是并发 goroutine，同时调 `tokenSource.Next()`；`blockSource.mu`（`sync.Mutex`）保护 `next/end` 游标。正常路径（块内自增）持锁极短；块用完才补块（每 65536 次一次远调）⇒ **进程内 token 唯一**，热路径几乎无锁竞争。
+
+**`CaseScope` per-case**：每个测试用例 `New(t)` 创建一个 `CaseScope`，持有进程级 `tokenSource` 句柄 + 存 `t`（供基建错误 fail-loud 与后续 §6 守卫）。`CaseScope` 不持有独立计数器，直接共享进程单例 `tokenSource`。
+
+### 可复现性（reproducibility）
+
+两件事需要区分：
+
+**算法是确定性的**：Feistel 用固定 key，`permute(42, cap)` 在任何机器任何次运行都产出同一字符串。这个属性是**可以依赖**的。
+
+**token 分配是非确定性的**：并行用例抢号谁先谁后由 goroutine 调度器决定，跨运行不保证同一字段拿到同一 token，因而不保证同一输出值。
+
+实际规则：**断言用生成时拿到的值对比系统返回值，不写字面值**。
+
+```go
+// 错误——字面值跨运行 flaky
+assert.Equal(t, "1e39809231bb183197009a69842ad572", resp.DeviceUUID)
+
+// 正确——存下生成值，断言 SUT 回写了同一个值
+deviceUUID := scope.UUID()
+createDevice(t, deviceUUID, ...)
+assert.Equal(t, deviceUUID, getDevice(t).UUID)
+```
+
+这条规则与并发无关，顺序运行也适用——一旦 token 序列因任何原因变化（新增用例、重排顺序），字面断言都会失效。
 
 ## 1.9 落地接缝（供 §2 实现，本章不实现）
 
@@ -244,3 +270,220 @@ func EpochSeconds() int64 ; func EpochMillis() int64
 | `FirstCharSpread` / `AllPositionsSpread` | 全宽扩散（首字符 + 全 16 位） | 16/16、每位 ≥8/16 符号 |
 
 > 注：spike 早期还含按形态命名 kind 与 budget tripwire 测试，对应讨论早期的 per-shape / fail-loud 取向；最终设计已改为**单一全局 kind + 静默全函数**，落代码阶段统一对齐。
+
+---
+
+# §2 L0 接线
+
+本章规定唯一性引擎（§1）与真实 daemon 之间的**接线**：服务端如何暴露 `AllocIDBlock` 原语、客户端如何发现 daemon 并管理本地区块缓存。
+
+核心原则：
+- 服务端挂 daemon 主端口，复用已有 `withAuth` 鉴权，**无需新端口、无需额外配置**。
+- 客户端发现模式与 `client/fake` 完全一致：调用方读 `mtkit.runtime.json`，显式传 `addr+token`。
+- 进程级 `blockSource` 单例隐藏在 `Client` 内部；`CaseScope` per-test，只暴露生成函数。
+
+## 2.1 服务端（`fixtured` 包）
+
+### HTTP 接口
+
+```
+POST /v1/fixture/alloc
+Content-Type: application/json
+Authorization: X-Mtkit-Token: <token>
+
+请求体：{"kind": "token", "size": 65536}
+成功响应：{"start": 0, "end": 65536}
+错误响应：{"ok": false, "error": "invalid_size", "message": "size must be positive"}
+```
+
+- **路由前缀**：`/v1/fixture/`，与 lease（`/v1/`）和 faked（`/v1/grpc/`、`/v1/http/`）各自不冲突。
+- **鉴权**：复用 daemon 的 `withAuth` 中间件（`X-Mtkit-Token` 对比 `cfg.Token`），与 lease / faked 同款。
+- **v1 只有 `"token"` 一个 kind**；kind 字段为后续扩展预留（格式稳定，语义不变）。
+
+### Allocator
+
+```go
+// v1 单一全局计数器（kind 字段在 HTTP 协议中预留，代码暂不分 kind）。
+type Allocator struct {
+    counter atomic.Int64
+}
+
+// Alloc 串行返回 [start, start+size) 半开区间，跨调用者天然不相交。
+// atomic.Add(size) 得到 newEnd，start = newEnd - size，无锁。
+func (a *Allocator) Alloc(kind string, size int64) (start, end int64)
+```
+
+### Server
+
+```go
+// Server 是 fixtured 的服务端，由 daemon 在启动时无条件创建（无 enable flag）。
+type Server struct {
+    alloc *Allocator
+}
+
+func New() *Server
+
+// RegisterRoutes 把 handler 挂到 daemon 主 mux，复用 wrap（即 d.withAuth）鉴权。
+func (s *Server) RegisterRoutes(mux *http.ServeMux, wrap func(http.HandlerFunc) http.HandlerFunc) {
+    mux.HandleFunc("/v1/fixture/alloc", wrap(s.handleAlloc))
+}
+```
+
+### 挂载点
+
+```go
+// orchestrator/lifecycle.go — Daemon.New() 中
+d.fixtured = fixtured.New()   // 无条件，无需 FakedEnabled 类似的 flag
+
+// orchestrator/server.go — Start() mux 注册段（取消注释已预留接缝）
+d.fixtured.RegisterRoutes(mux, d.withAuth)
+```
+
+## 2.2 客户端（`client/fixture` 包）
+
+### 架构分层
+
+```text
+CaseScope          (per-test)   — 持 t + src；暴露 UniqueString / UUID 等生成函数
+    └── blockSource (进程级单例) — 持 mu + next/end；热路径本地自增，冷路径补块
+            └── HTTP client     (thin)        — POST /v1/fixture/alloc，持 addr + token
+```
+
+### 内部 tokenSource 接口
+
+```go
+// iTokenSource 仅在包内使用，不进任何公共签名。
+// error 仅在基建故障（daemon 不可达、网络超时）时非 nil；正常路径无 error。
+type iTokenSource interface {
+    Next() (int64, error)
+}
+```
+
+### blockSource
+
+```go
+type blockSource struct {
+    mu    sync.Mutex
+    next  int64
+    end   int64
+    size  int64  // 固定 65536
+    kind  string // 固定 "token"
+    fetch func(kind string, size int64) (start, end int64, err error)
+    // fetch 实现须带 5s 超时；超时视同 daemon 不可达，由调用侧 t.Fatalf 处理。
+    // 补块失败不重试——本地+CI 均为回环地址，daemon 不可达即基建故障，无重试价值。
+}
+
+func (b *blockSource) Next() (int64, error) {
+    b.mu.Lock()
+    defer b.mu.Unlock()
+    if b.next >= b.end {            // 冷路径：每 65536 次一次远调
+        s, e, err := b.fetch(b.kind, b.size)
+        if err != nil {
+            return 0, err           // 立即返回错误，不重试
+        }
+        b.next, b.end = s, e
+    }
+    v := b.next
+    b.next++
+    return v, nil
+}
+```
+
+### CaseScope
+
+```go
+type CaseScope struct {
+    t   testing.TB
+    src iTokenSource  // 指向进程级 blockSource
+}
+
+// next 是 CaseScope 所有生成函数的底层出口。
+// 基建故障（daemon 不可达）在此通过 t.Fatalf 终止用例，不向上传播 error。
+func (s *CaseScope) next() int64 {
+    v, err := s.src.Next()
+    if err != nil {
+        s.t.Fatalf("fixture: daemon unreachable: %v", err)
+    }
+    return v
+}
+
+// cleanup 是 t.Cleanup 注册的回调，当前为 no-op；按需填充。
+func (s *CaseScope) cleanup() {}
+
+// 第 1 层：唯一载荷（§1.6）
+func (s *CaseScope) UniqueString(n int, cs Charset) string
+func (s *CaseScope) UniqueHex(n int) string   { return s.UniqueString(n, Hex) }
+func (s *CaseScope) UniqueInt(digits int) int64
+
+// 第 2 层：塑形（格式细节见 §1.6）
+func (s *CaseScope) UUID() string              // RFC 4122 v4 带短线（36字符）
+func (s *CaseScope) UUIDNoDash() string        // RFC 4122 v4 无短线（32字符）
+func (s *CaseScope) Email() string             // "fixture+{载荷}@mtkit.test"
+func (s *CaseScope) EmailFrom(seed string) string // seed 为合法 email，见 §1.6
+func (s *CaseScope) Phone(country string) string  // E.164，ISO alpha-2，见 §1.6
+```
+
+## 2.3 进程级 Client 与发现
+
+### 发现模式
+
+与 `client/fake` 完全一致：调用方自行读取 `mtkit.runtime.json` 拿到 `RuntimeInfo.Addr` / `RuntimeInfo.Token`，显式传入 `fixture.New`。没有自动发现、没有隐式全局状态。
+
+```go
+// client/fixture/client.go
+
+// Client 进程级对象，持有 blockSource 单例。整个测试进程只创建一次（通常在 TestMain）。
+type Client struct {
+    src *blockSource
+}
+
+// New 创建进程级 fixture client。
+// addr、token 来自 runtime.Read(runtimePath) 返回的 RuntimeInfo.Addr / .Token。
+func New(addr, token string) *Client
+
+// NewScope 为单个测试用例创建 CaseScope，t 用于基建错误 fail-loud。
+// 内部注册 t.Cleanup（no-op，按需填充）；每个用例调用一次（通常在 test helper 顶部）。
+func (c *Client) NewScope(t testing.TB) *CaseScope {
+    s := &CaseScope{t: t, src: c.src}
+    t.Cleanup(s.cleanup)
+    return s
+}
+```
+
+### 调用侧示例
+
+```go
+// setup_test.go（TestMain 级别）
+var fxClient *fixture.Client
+
+func TestMain(m *testing.M) {
+    ri, err := runtime.Read(runtimePath)
+    if err != nil { log.Fatal(err) }
+    fxClient = fixture.New(ri.Addr, ri.Token)
+    os.Exit(m.Run())
+}
+
+// 每个测试用例
+func TestCreateDevice(t *testing.T) {
+    scope := fxClient.NewScope(t)
+    deviceUUID := scope.UUID()
+    // ... 用 deviceUUID 构造请求、断言响应 ...
+}
+```
+
+## 2.4 单测隔离 seam
+
+`iTokenSource` 是包内接口，允许纯逻辑单测注入 trivial fake、不起 daemon：
+
+```go
+// 包内辅助（unexported），供单测使用
+type seqSource struct{ n int64 }
+func (s *seqSource) Next() (int64, error) { v := s.n; s.n++; return v, nil }
+
+// newScopeWith 包内构造函数，绕过 HTTP 层直接注入 source
+func newScopeWith(t testing.TB, src iTokenSource) *CaseScope {
+    return &CaseScope{t: t, src: src}
+}
+```
+
+公共 `New(addr, token)` / `NewScope(t)` 不暴露 source 参数——公共 API 保持最小化，seam 只对包内测试可见。
