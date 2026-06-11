@@ -42,6 +42,26 @@ RFC 4122 v4 合规的唯一标识符。`UUID()` 返回标准带短线格式（36
 
 **注意**：项目侧"与 UUID 等长但无 v4 语义"的标识符（如 meross 设备 ID）不应使用 L2 UUID 方法，直接用 L1 的 `UniqueHex(32)`。
 
+## provision
+
+测试前置数据的一次性幂等建立（建表、索引、命名空间、种子数据等）。在 daemon 就绪后、`m.Run()` 前执行，由 `Provision` 函数驱动：对每个 `Resource` 调 `Registry.EnsureOnce`，保证同一 daemon 生命周期内同一 key 只 Apply 一次。
+
+## Resource
+
+可 provision 的基础设施单元。`Key()` 返回跨进程跨运行的稳定字符串标识；`Apply(ctx, env)` 执行实际建立操作（建表、写种子等）。`Key` 一旦确定不能更改，它是 Registry 账本的持久化索引。
+
+## Registry
+
+provision 的跨进程幂等协调机制。唯一方法 `EnsureOnce(ctx, key, fn)`：在互斥保护下，若 key 未曾应用则执行 fn 并标记，否则跳过（`skipped=true`）。v1 后端为文本账本（FileRegistry）。
+
+## 文本账本（FileRegistry）
+
+Registry 的 v1 实现后端。daemon 启动时在 RuntimeDir 创建空的 `mtkit.provision.json`（JSON 集合格式），生命周期严格绑定 daemon/容器——daemon 重启则文件重置。多测试进程通过整文件锁（flock/LockFileEx）序列化读写，无任何数据库依赖。
+
+## PersistEnv
+
+为 `Resource.Apply` 提供数据库连接的进程级连接池。从 `RuntimeInfo.SUTEnv`（`mtkit.runtime.json` 的 `sut_env` 字段）读取连接字符串，按 sutEnvKey 懒初始化并复用。与 Registry 完全独立——Registry 协调"谁来执行"，PersistEnv 提供"执行时用的连接"。
+
 ## plus addressing（EmailFrom 语义）
 
 RFC 5321 子地址技术：`local+suffix@domain`。`EmailFrom(seed)` 接收完整合法 email 地址作为 seed，在其 local part 末尾追加 `+{唯一载荷}`，domain 保持不变，local part 原样保留（不裁剪已有 `+` 子地址）。seed 非合法 email 格式则 panic。

@@ -10,7 +10,7 @@
 
 - **§1 唯一性引擎** — 已定稿（本轮）。
 - **§2 L0 接线：`fixtured` 服务端原语 + `client/fixture` 客户端发现** — 已定稿（本轮）。
-- §3 provision：schema 声明 + `Registry`（锁/账本）+ 入口接缝 —（待讨论）
+- **§3 provision** — 已定稿（本轮）。
 - §4 seeder / recipe 原语 —（待讨论）
 - §5 request / observe 底座 —（待讨论）
 - §6 CaseScope / PrimaryScope / `AssertBound` 隔离守卫 — **不做**（隔离守卫过度设计，已确认取消）
@@ -59,22 +59,22 @@ L2  塑形         ── 在 L1 载荷上加纯格式：UUID / email / dashed �
 
 底层 token 是 **`int64`**，从 0 单调递增，上界 ≈ **`2⁶³` ≈ 9.2×10¹⁸**。一个形态会不会重复，**只取决于它的值空间 `cap` 与运行期实际生成量的关系**：
 
-| 档 | 条件 | 含义 | 落档示例 |
-|---|---|---|---|
-| **① 无条件唯一** | `cap ≥ 2⁶³` | token 永远 `< cap`，**任何运行量都不重复** | UUID(32 hex)、hex `n≥16`、alnum `n≥11`、lower/upper `n≥14`、digit `n≥19` |
-| **② 实践安全** | `运行生成量 ≪ cap < 2⁶³` | 现实测试量远小于 cap，不会重复；除非真生成超过 cap 个 | 10 位 uid(`10¹⁰≈2³³`)、12 位 lower(`26¹²≈2⁵⁶`)、email local-part(足够长) |
-| **③ 有概率重复** | `cap ≲ 运行生成量`（≤~6 字符的定宽窄串） | token 可能溢出 cap、`mod` 折叠后**静默别名** | digit `n≤6`、hex `n≤5`、短验证码 |
+| 档               | 条件                                     | 含义                                                  | 落档示例                                                                 |
+| ---------------- | ---------------------------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------ |
+| **① 无条件唯一** | `cap ≥ 2⁶³`                              | token 永远 `< cap`，**任何运行量都不重复**            | UUID(32 hex)、hex `n≥16`、alnum `n≥11`、lower/upper `n≥14`、digit `n≥19` |
+| **② 实践安全**   | `运行生成量 ≪ cap < 2⁶³`                 | 现实测试量远小于 cap，不会重复；除非真生成超过 cap 个 | 10 位 uid(`10¹⁰≈2³³`)、12 位 lower(`26¹²≈2⁵⁶`)、email local-part(足够长) |
+| **③ 有概率重复** | `cap ≲ 运行生成量`（≤~6 字符的定宽窄串） | token 可能溢出 cap、`mod` 折叠后**静默别名**          | digit `n≤6`、hex `n≤5`、短验证码                                         |
 
 > **重要**：10 位 uid 属 **②** 而非 **①**——它不是"无条件唯一"，而是"运行量远小于 10¹⁰ 所以现实安全"。文档与注释中**不得**把 ② 含糊表述为"保证唯一"。
 
 `cap ≥ 2⁶³` 各字符集的最小 n（落入 ①）：
 
-| 字符集（size） | 最小 n |
-|---|---|
-| Digit (10) | 19 |
-| Hex (16) | 16 |
-| Lower / Upper (26) | 14 |
-| AlphaNum (62) | 11 |
+| 字符集（size）     | 最小 n |
+| ------------------ | ------ |
+| Digit (10)         | 19     |
+| Hex (16)           | 16     |
+| Lower / Upper (26) | 14     |
+| AlphaNum (62)      | 11     |
 
 ## 1.3 L0 区块发号
 
@@ -260,14 +260,14 @@ assert.Equal(t, deviceUUID, getDevice(t).UUID)
 
 算法由可运行 spike `test/spike/unique/unique_test.go` 实测背书（`-race` 干净、`-count=3` 无 flaky）：
 
-| 测试 | 验证 | 结果 |
-|---|---|---|
-| `Token_Concurrent_SingleProcess` | 同进程跨 goroutine + 小块频繁补块的边界竞态 | 128 万 token 零重复 |
-| `Token_MultiProcess_GlobalUnique` | 共享 allocator + 多进程多协程 | 128 万 token 全局零重复 |
-| `Permute_IsBijection_Exhaustive` | 置换双射（hex/decimal/base62 穷举铺满） | distinct == cap |
-| `UniqueString_EndToEnd` | 完整管线多进程多协程 | 100 万串零碰撞、长度/字符集合法 |
-| `UniqueHex32_UUID` | UUID=32hex + dashed 格式 | 50 万零碰撞，样例 `1e39809231bb183197009a69842ad572` |
-| `FirstCharSpread` / `AllPositionsSpread` | 全宽扩散（首字符 + 全 16 位） | 16/16、每位 ≥8/16 符号 |
+| 测试                                     | 验证                                        | 结果                                                 |
+| ---------------------------------------- | ------------------------------------------- | ---------------------------------------------------- |
+| `Token_Concurrent_SingleProcess`         | 同进程跨 goroutine + 小块频繁补块的边界竞态 | 128 万 token 零重复                                  |
+| `Token_MultiProcess_GlobalUnique`        | 共享 allocator + 多进程多协程               | 128 万 token 全局零重复                              |
+| `Permute_IsBijection_Exhaustive`         | 置换双射（hex/decimal/base62 穷举铺满）     | distinct == cap                                      |
+| `UniqueString_EndToEnd`                  | 完整管线多进程多协程                        | 100 万串零碰撞、长度/字符集合法                      |
+| `UniqueHex32_UUID`                       | UUID=32hex + dashed 格式                    | 50 万零碰撞，样例 `1e39809231bb183197009a69842ad572` |
+| `FirstCharSpread` / `AllPositionsSpread` | 全宽扩散（首字符 + 全 16 位）               | 16/16、每位 ≥8/16 符号                               |
 
 > 注：spike 早期还含按形态命名 kind 与 budget tripwire 测试，对应讨论早期的 per-shape / fail-loud 取向；最终设计已改为**单一全局 kind + 静默全函数**，落代码阶段统一对齐。
 
@@ -487,3 +487,200 @@ func newScopeWith(t testing.TB, src iTokenSource) *CaseScope {
 ```
 
 公共 `New(addr, token)` / `NewScope(t)` 不暴露 source 参数——公共 API 保持最小化，seam 只对包内测试可见。
+
+---
+
+# §3 provision
+
+provision 解决的核心问题：**测试前置数据（建表、种子数据）在多个测试进程并发或先后运行时不冲突、不重复执行**。
+
+核心机制三件套：
+1. `Resource`——声明"要建什么"
+2. `Registry`——分布式互斥锁 + 持久化"已应用"账本
+3. `PersistEnv`——进程级连接池，供 Apply 和 Registry 使用
+
+## 3.1 Resource 接口
+
+```go
+// Resource 表示一个可 provision 的基础设施资源（表、索引、命名空间、种子数据等）。
+// Key() 返回跨进程跨运行的稳定字符串，用作 Registry 账本的条目 key。
+// Apply 在 Registry 互斥锁内、且 Applied(key)==false 时被 Provision 调用。
+// Apply 应具备重试安全性：多条写入需事务包装，保证"全成功或全回滚"。
+type Resource interface {
+    Key() string
+    Apply(ctx context.Context, env PersistEnv) error
+}
+```
+
+- `Key()` 推荐命名模式：`"storage.schema.object"`，如 `"mysql.mssiot_user.users"`。
+- `Key()` 的返回值**不能变**——它是 Registry 账本的持久化标识，一旦改变，旧账本条目永远不会被命中。
+- `Checksum()` 已删除——v1 不做 staleness 检测；daemon 生命周期与容器绑定，数据随容器销毁。
+
+## 3.2 Registry 接口
+
+```go
+// Registry 提供跨进程幂等执行保证。
+// v1 实现后端为文本账本（见 §3.2.1）；后续可替换为 Redis、MySQL 事务等，不影响 Provision 逻辑。
+type Registry interface {
+    // EnsureOnce 在互斥保护下幂等执行 fn。
+    // - skipped=true：key 已注册，fn 未执行（正常幂等路径）。
+    // - skipped=false, err=nil：fn 执行成功，key 已标记。
+    // - err!=nil：fn 执行失败或基建故障；key 不被标记，下次可重入。
+    // ctx 控制等锁超时；fn 内部应自行处理自身的超时。
+    EnsureOnce(ctx context.Context, key string, fn func() error) (skipped bool, err error)
+}
+```
+
+**接口为何只有一个方法**：早期草案拆为 `WithLock` + `Applied` + `MarkApplied` 三段，但"检查 + 执行 + 标记"的原子性因此分散到调用方——每个后端都要在接口缝隙里重建原子性（MySQL 需在锁外锁内各读一次）。`EnsureOnce` 把原子性下推给后端实现，接口契约更紧。见 ADR-0001。
+
+**`skipped` 不走 `error` channel**：幂等跳过是正常路径，`error != nil` 在 Go 惯例里表示"出了问题"。若用哨兵错误，所有调用方都要过滤这个"非错误的错误"，容易漏掉。`skipped bool` 供审计/监控使用，不关心的调用方直接忽略。
+
+## 3.2.1 v1 实现：文本账本（FileRegistry）
+
+**为什么不用 MySQL**：Registry 必须在任何资源被 provision 之前就可用。MySQL 后端要求 MySQL 连接，造成"用 MySQL 来 provision MySQL"的循环依赖。文本账本无任何基础设施依赖，任何资源类型均可 provision。见 ADR-0001。
+
+**账本文件**：`{RuntimeDir}/mtkit.provision.json`，格式为 JSON 集合：`{"applied":["key1","key2"]}`。
+
+**生命周期**：daemon 在 `Start()` 时写入空文件（`{"applied":[]}`），与 daemon/容器生命周期严格绑定——daemon 重启 → 文件重置 → 容器重建，账本与数据同步清零，不会出现"账本说已 applied 但表不存在"的状态。
+
+**互斥**：整文件一把锁（Linux/Mac 用 `flock`，Windows 用 `LockFileEx`），`EnsureOnce` 持锁期间执行完整的"读文件 → 检查 key → 执行 fn → 写文件"流程。粒度粗但 provision 是低频启动操作，锁竞争窗口极短，并发收益可忽略。
+
+**路径发现**：clients 从已知的 `runtimePath` 推算：`filepath.Join(filepath.Dir(runtimePath), "mtkit.provision.json")`，无需修改 `RuntimeInfo` 结构。
+
+```go
+// FileRegistry 是 Registry 的 v1 实现，后端为本地文本账本文件。
+type FileRegistry struct { /* ... */ }
+
+// NewFileRegistry 创建文本账本 Registry。ledgerPath 由调用方从 runtimePath 推算。
+func NewFileRegistry(ledgerPath string) *FileRegistry
+```
+
+## 3.3 PersistEnv 接口
+
+`PersistEnv` 从 `RuntimeInfo.SUTEnv`（`mtkit.runtime.json` 的 `sut_env` 字段）读取连接字符串，按需建立连接并在进程内复用。**不改 `RuntimeInfo` 结构，不改 `ContainerRegistration`。**
+
+```go
+// PersistEnv 提供测试基础设施连接，供 Resource.Apply 和 Registry 使用。
+// 连接在进程内懒初始化并按 sutEnvKey 缓存，整个测试进程生命周期复用。
+type PersistEnv interface {
+    // MySQL 返回 sut_env[sutEnvKey] 所指数据库的 *sql.DB。
+    // sutEnvKey 是 ContainerRegistration.SUTEnv 回调中定义的 env var 名，如 "MYSQL_DSN"。
+    MySQL(sutEnvKey string) *sql.DB
+    Redis(sutEnvKey string) redis.UniversalClient
+    Mongo(sutEnvKey string) *mongo.Client
+}
+```
+
+**`sutEnvKey` = `sut_env` map 的 key，不是容器名，不是数据库名。**
+
+多容器、多数据库、同类容器多实例，靠不同 env var key 区分：
+
+```text
+sut_env 内容示例：
+  MYSQL_DSN          →  mysql 容器，mssiot_user 库
+  MYSQL_DEVICE_DSN   →  mysql-device 容器，mssiot_device 库
+  REDIS_ADDR         →  redis 容器
+```
+
+连接复用实现：进程级单例，`sync.Mutex` + map 缓存，一个 `sutEnvKey` 对应一个连接对象。
+
+## 3.4 Resource 工厂辅助函数
+
+```go
+// MySQLTable 创建"建表"类 Resource。
+// sutEnvKey: sut_env 中数据库连接的 key（如 "MYSQL_DSN"）。
+// key:       资源稳定标识（如 "mysql.mssiot_user.users"）。
+// ddl:       CREATE TABLE 语句；建议含 IF NOT EXISTS（Apply 幂等，便于手动重试）。
+func MySQLTable(sutEnvKey, key, ddl string) Resource
+
+// RedisNS 声明 Redis 命名空间（v1 Apply 为 no-op，文档性资源）。
+func RedisNS(sutEnvKey, key, ns string) Resource
+```
+
+推荐将稳定 Resource 变量放在 `test/fixture/resources/` 共享包中：
+
+```go
+// test/fixture/resources/mysql.go
+var UserTable = fixture.MySQLTable(
+    "MYSQL_DSN",
+    "mysql.mssiot_user.users",
+    `CREATE TABLE IF NOT EXISTS users (uid BIGINT PRIMARY KEY, ...) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+)
+```
+
+## 3.5 注册机制（混合 A+C 方案）
+
+**约定**：每个测试包有一个本地聚合函数 `requirements()`，返回该包需要 provision 的 `[]Resource`。TestMain 将其传给 `WithSchema`，在 `Run` 内 daemon 就绪后统一 provision。
+
+资源变量来自共享包（稳定 Key 保证），本地 `requirements()` 负责聚合：
+
+```
+# 以下路径属于调用方项目，不在 mtkit 仓库内
+
+test/fixture/resources/        ← 共享稳定 Resource 定义（跨测试包复用）
+    mysql.go                   → var UserTable, DeviceTable, ...
+    redis.go                   → var TokenCache, ...
+
+test/infra/                    ← 集成测试包（与 run.go、containers.go、sut.go 同目录）
+    setup_test.go              → TestMain 调 WithSchema(requirements()).Run(m)
+    requirements_test.go       → func requirements() []fixture.Resource { return []fixture.Resource{resources.UserTable, ...} }
+```
+
+```go
+// requirements_test.go
+var testResources []fixture.Resource
+
+func init() { testResources = append(testResources, resources.UserTable, resources.TokenCache) }
+
+func requirements() []fixture.Resource { return testResources }
+```
+
+## 3.6 Provision 函数
+
+```go
+// Provision 遍历 resources，对每个资源调 EnsureOnce；
+// 保证：同一 daemon 生命周期内，同一 key 只 Apply 一次（跨进程安全）。
+// Apply 失败 → 返回带资源 key 的错误（通常由调用方 Fatal 终止测试包）。
+func Provision(ctx context.Context, reg Registry, env PersistEnv, resources []Resource) error
+```
+
+内部实现骨架：
+
+```go
+func Provision(ctx context.Context, reg Registry, env PersistEnv, resources []Resource) error {
+    for _, r := range resources {
+        _, err := reg.EnsureOnce(ctx, r.Key(), func() error {
+            return r.Apply(ctx, env)
+        })
+        if err != nil {
+            return fmt.Errorf("provision %s: %w", r.Key(), err)
+        }
+    }
+    return nil
+}
+```
+
+**非幂等 Apply 的安全性**：`EnsureOnce` 提供 run-once 保证，不要求 Apply 本身幂等。凡涉及多条数据写入的 Apply，需用事务包装——若中途失败则回滚，下次重试时 key 未标记可以重入。
+
+## 3.7 接入 TestMain
+
+```go
+// TestMain 接入示例（mtkit.New(...).WithSchema(...).Run(m) 内部处理 daemon 就绪 + provision）
+func TestMain(m *testing.M) {
+    ri, err := runtime.Read(runtimePath)
+    if err != nil { log.Fatal(err) }
+
+    fxClient = fixture.New(ri.Addr, ri.Token)
+
+    os.Exit(
+        mtkit.New(project, cfg).
+            RegisterContainers(myContainers).
+            RegisterSUT(mySUT).
+            WithSchema(requirements()).   // daemon 就绪后、m.Run() 前执行 provision
+            Run(m),
+    )
+}
+```
+
+- `WithSchema([]Resource)` 接收资源列表，`Run` 内部在 daemon 就绪后构造 `PersistEnv`（读 `ri.SUTEnv`）和 `Registry`，调用 `Provision`。
+- `Provision` 失败 → `Run` 以非零码退出（`log.Fatal` 级别），不进入 `m.Run()`。
