@@ -15,6 +15,8 @@
 - §5 request / observe 底座 —（待讨论）
 - §6 CaseScope / PrimaryScope / `AssertBound` 隔离守卫 — **不做**（隔离守卫过度设计，已确认取消）
 
+> **已确认不进 v1 的功能**（源自 §6 取消决策）：`Primary()`、`AnotherPrimary()`、`RegisterPrimary`、`Gen` 接口、`AssertBound`、`BindToScope`、生成值自动追踪。评估结论：并发隔离已由唯一生成本身保证，守卫机制是额外复杂度且收益低。旧设计文档（`fixture-design.md`、`fixture-impl-plan.md`）中大量描述这些功能，**实现时不做**。
+
 ---
 
 # §1 唯一性引擎
@@ -193,16 +195,32 @@ func (s *CaseScope) UUIDNoDash() string                                // RFC 41
 func (s *CaseScope) Email() string                                     // "fixture+" + 载荷 + "@mtkit.test"（.test 为 RFC 2606 测试保留 TLD）
 func (s *CaseScope) EmailFrom(seed string) string                      // seed 须为合法 email；输出 {local}+{载荷}@{domain}，local part 原样保留；非法格式 panic
 func (s *CaseScope) Phone(country string) string                       // E.164 格式（如 +8613812345678）；country 为 ISO 3166-1 alpha-2；初始支持 CN/US/GB/DE/FR/JP/IT/CA；不支持则 panic
+// Phone 无 From 变体：电话号码保留可读种子的场景极少；若确需，用 L1 UniqueString 在项目层自行拼接。
 
 // 确定性变换 / 时钟：无唯一性、无 token → 自由函数
 func Sha256Hex(s string) string
 func EpochSeconds() int64 ; func EpochMillis() int64
+
+// 标准枚举样例集：挑选非生成，无唯一性，无 token 消耗
+// 用于"测试需要一个合法国家码/货币/时区"而非"需要唯一值"的场景；可重复调用，值可跨用例相同。
+// 收录判据：取值集稳定 + 定义与本项目无关（ISO/IANA/BCP47）。
+// 项目内枚举（vendor/status/type）取值随业务变，不进此处，由项目自行维护。
+var ISOCountryCodes []string   // ISO 3166-1 alpha-2 全集，如 "CN"、"US"
+var ISOCurrencies   []string   // ISO 4217 全集，如 "CNY"、"USD"
+var IANATimeZones   []string   // IANA tz database 全集，如 "Asia/Shanghai"
+var BCP47Languages  []string   // BCP 47 常用集，如 "zh-CN"、"en-US"
+
+func SampleCountry()  string   // 随机返回 ISOCountryCodes 中一个合法值
+func SampleCurrency() string   // 随机返回 ISOCurrencies 中一个合法值
+func SampleTimeZone() string   // 随机返回 IANATimeZones 中一个合法值
+func SampleLanguage() string   // 随机返回 BCP47Languages 中一个合法值
 ```
 
 - **UUID 为 RFC 4122 v4**：version nibble 固定 `4`、variant nibble 固定 `a`，两者插入 `UniqueHex(30)` 的固定位置，剩余 30 个 hex 位承载唯一性（属 ① 档，2^120 > 2^63）。`UUID()` 与 `UUIDNoDash()` 各消耗独立 token，产出两个不同标识符；不存在"同一标识符两种格式"语义。
 - **项目自有 32-hex 标识符（如 meross 设备 ID）不命名为 UUID**：若只需"与 UUID 等长的唯一 hex 串"且不要求 v4 合规，用 L1 的 `UniqueHex(32)` 直接生成，不经 L2 UUID 入口。
 - **复合字段一律"单载荷 + 塑形"**，不做分段独立发号（如 UUID = UniqueHex(30) 输出 + 插入固定 version/variant 位）。
 - 项目自有格式（`guid` 排布、`order_id` 方案、加密对象）在项目层用第 1 层载荷自行塑形，不进 `client/fixture`。
+- **`Sample*` 的唯一性**：`Sample*` 随机返回、可重复，不消耗 token。若测试需要"唯一国家码序列"（罕见），用 `UniqueInt` 对 `len(ISOCountryCodes)` 取模自行索引。
 
 ## 1.7 唯一性代价契约（静默全函数）
 
@@ -545,6 +563,8 @@ type Registry interface {
 
 **互斥**：整文件一把锁（Linux/Mac 用 `flock`，Windows 用 `LockFileEx`），`EnsureOnce` 持锁期间执行完整的"读文件 → 检查 key → 执行 fn → 写文件"流程。粒度粗但 provision 是低频启动操作，锁竞争窗口极短，并发收益可忽略。
 
+**ctx 与等锁超时**：等待文件锁期间若 ctx 取消，立即返回 `ctx.Err()`，fn 不执行，key 不被标记。若调用方未设截止时间，FileRegistry 内部默认 **30s 等锁超时**——provision 在测试启动阶段，进程卡死（一个进程持锁崩溃未释放）的危害远大于超时报错；超时后返回 error，由 `Provision` → `Run` 向上传播，`log.Fatal` 终止该测试包。
+
 **路径发现**：clients 从已知的 `runtimePath` 推算：`filepath.Join(filepath.Dir(runtimePath), "mtkit.provision.json")`，无需修改 `RuntimeInfo` 结构。
 
 ```go
@@ -584,6 +604,16 @@ sut_env 内容示例：
 
 连接复用实现：进程级单例，`sync.Mutex` + map 缓存，一个 `sutEnvKey` 对应一个连接对象。
 
+**连接失败行为**：`sutEnvKey` 不在 `sut_env` map 中，或 DSN 格式有误、连接超时 → `panic`（与 §1.7 daemon 不可达处理规则一致：连接失败属基建故障，不返回 error，由进程级 recover 或 TestMain 兜底）。
+
+**构造函数**：
+
+```go
+// NewPersistEnv 创建进程级连接池，sutEnv 即 RuntimeInfo.SUTEnv。
+// 连接懒初始化——调用 MySQL/Redis/Mongo 时才建立，不在构造时预热。
+func NewPersistEnv(sutEnv map[string]string) *PersistEnv
+```
+
 ## 3.4 Resource 工厂辅助函数
 
 ```go
@@ -608,7 +638,9 @@ var UserTable = fixture.MySQLTable(
 )
 ```
 
-## 3.5 注册机制（混合 A+C 方案）
+## 3.5 注册机制
+
+**两层分工**：共享层（`test/fixture/resources/`）负责稳定 Resource 定义（跨测试包复用、Key 不变）；本地层（`test/infra/`）的 `requirements()` 负责按包聚合，决定本包实际 provision 哪些资源。
 
 **约定**：每个测试包有一个本地聚合函数 `requirements()`，返回该包需要 provision 的 `[]Resource`。TestMain 将其传给 `WithSchema`，在 `Run` 内 daemon 就绪后统一 provision。
 
@@ -684,3 +716,36 @@ func TestMain(m *testing.M) {
 
 - `WithSchema([]Resource)` 接收资源列表，`Run` 内部在 daemon 就绪后构造 `PersistEnv`（读 `ri.SUTEnv`）和 `Registry`，调用 `Provision`。
 - `Provision` 失败 → `Run` 以非零码退出（`log.Fatal` 级别），不进入 `m.Run()`。
+
+## 3.8 WithSchema 内部 wiring
+
+本节规定 `WithSchema` 在 `mtkit.Builder` 上的签名，以及 `Run` 内部的 provision 接线骨架。
+
+### Builder 方法签名
+
+```go
+// WithSchema 注册需要 provision 的资源列表。
+// Run 在 daemon 就绪后、m.Run() 前自动执行 Provision。
+// 多次调用 WithSchema 追加资源，Key 重复的资源在 Provision 内部通过 EnsureOnce 幂等处理。
+func (b *Builder) WithSchema(resources []fixture.Resource) *Builder
+```
+
+### Run 内部 provision 接线
+
+daemon 就绪后（`RuntimeInfo` 已可读），`Run` 执行如下骨架：
+
+```go
+// Run 内部 provision 骨架（伪代码，真实实现在 orchestrator/client/run.go 或 mtkit.go）
+if len(b.schemaResources) > 0 {
+    ledgerPath := filepath.Join(filepath.Dir(cfg.RuntimePath), "mtkit.provision.json")
+    reg := fixture.NewFileRegistry(ledgerPath)
+    env := fixture.NewPersistEnv(ri.SUTEnv)   // ri = 刚读到的 RuntimeInfo
+    if err := fixture.Provision(ctx, reg, env, b.schemaResources); err != nil {
+        log.Fatalf("provision failed: %v", err)
+    }
+}
+```
+
+- `ledgerPath` 由 `runtimePath`（`cfg.RuntimePath`）同目录推算，无需修改 `RuntimeInfo`。
+- `NewPersistEnv` 接收 `ri.SUTEnv`（`map[string]string`），懒初始化各存储连接。
+- `Provision` 失败直接 `log.Fatal`，不进入 `m.Run()`——schema 不就绪则测试无意义。

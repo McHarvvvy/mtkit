@@ -62,6 +62,10 @@ Registry 的 v1 实现后端。daemon 启动时在 RuntimeDir 创建空的 `mtki
 
 为 `Resource.Apply` 提供数据库连接的进程级连接池。从 `RuntimeInfo.SUTEnv`（`mtkit.runtime.json` 的 `sut_env` 字段）读取连接字符串，按 sutEnvKey 懒初始化并复用。与 Registry 完全独立——Registry 协调"谁来执行"，PersistEnv 提供"执行时用的连接"。
 
+## 标准枚举样例集（Sample* 语义）
+
+`client/fixture` 提供的"挑选非生成"便利函数：`SampleCountry()`、`SampleCurrency()`、`SampleTimeZone()`、`SampleLanguage()`，以及对应的全集变量 `ISOCountryCodes`、`ISOCurrencies`、`IANATimeZones`、`BCP47Languages`。无唯一性、无 token 消耗，用于"测试需要一个合法值"而非"需要唯一值"的场景。收录判据：取值集稳定 + 定义与本项目无关（ISO/IANA/BCP47）。项目内枚举（vendor/status 等）不进此处。
+
 ## plus addressing（EmailFrom 语义）
 
 RFC 5321 子地址技术：`local+suffix@domain`。`EmailFrom(seed)` 接收完整合法 email 地址作为 seed，在其 local part 末尾追加 `+{唯一载荷}`，domain 保持不变，local part 原样保留（不裁剪已有 `+` 子地址）。seed 非合法 email 格式则 panic。
