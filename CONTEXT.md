@@ -10,7 +10,7 @@ daemon 托管的全局 token 发号器。以 `AllocIDBlock(kind, size)` 向客�
 
 ## L1 · 技术原语
 
-`CaseScope` 上的生成方法：`UniqueInt`、`UniqueString`、`UniqueHex`。负责将 L0 token 经 Feistel FPE 单射成指定长度、指定字符集的唯一串或整数。与业务语义无关，只关心"多少位/多长/唯一"。
+`CaseScope` 上的生成方法：`UniqueInt`、`UniqueString`、`UniqueHex`。负责将 L0 token 经 Feistel FPE 单射成指定长度、指定字符集的唯一串或整数。与业务语义无关，只关心"多少位/多长/唯一"。`UniqueInt` 返回 `int64`，合法位数为 `1..18`；19 位及以上数字载荷用 `UniqueString(n, Digit)`。
 
 ## L2 · 类型化生成器
 
@@ -26,7 +26,7 @@ daemon 托管的全局 token 发号器。以 `AllocIDBlock(kind, size)` 向客�
 
 ## fixtured
 
-daemon 内嵌的服务端组件。通过 `POST /v1/fixture/alloc` 暴露 L0 block 分配能力，挂载于 daemon 主端口，复用 `withAuth` 鉴权。无独立二进制。
+daemon 内嵌的服务端组件。通过 `POST /v1/fixture/alloc` 暴露 L0 block 分配能力，挂载于 daemon 主端口，复用 `withAuth` 鉴权。无独立二进制。provision 的公共接口与实现（`Resource` / `Registry` / `PersistEnv` / `Provision`）也归此包，避免 `mtkit` 门面依赖消费端 `client/fixture`。
 
 ## daemon
 
@@ -60,7 +60,7 @@ Registry 的 v1 实现后端。daemon 启动时在 RuntimeDir 创建空的 `mtki
 
 ## PersistEnv
 
-为 `Resource.Apply` 提供数据库连接的进程级连接池。从 `RuntimeInfo.SUTEnv`（`mtkit.runtime.json` 的 `sut_env` 字段）读取连接字符串，按 sutEnvKey 懒初始化并复用。与 Registry 完全独立——Registry 协调"谁来执行"，PersistEnv 提供"执行时用的连接"。
+为 `Resource.Apply` 提供数据库连接的进程级连接池。从 `RuntimeInfo.SUTEnv`（`mtkit.runtime.json` 的 `sut_env` 字段）读取连接字符串，按 sutEnvKey 懒初始化并复用。与 Registry 完全独立——Registry 协调"谁来执行"，PersistEnv 提供"执行时用的连接"。v1 使用 `database/sql` + `github.com/go-sql-driver/mysql`、`github.com/redis/go-redis/v9`、`go.mongodb.org/mongo-driver/mongo`；Redis namespace 资源本身为 no-op。
 
 ## 标准枚举样例集（Sample* 语义）
 
@@ -72,4 +72,4 @@ RFC 5321 子地址技术：`local+suffix@domain`。`EmailFrom(seed)` 接收完�
 
 ## E.164（Phone 语义）
 
-ITU-T 国际电话号码标准：`+{国家码}{订户号}`，如 `+8613812345678`。`Phone(country)` 的输出格式。country 参数为 ISO 3166-1 alpha-2 代码（如 `"CN"`、`"US"`）；初始支持集合：CN / US / GB / DE / FR / JP / IT / CA。传入不支持的 country 则 panic。
+ITU-T 国际电话号码标准：`+{国家码}{订户号}`，如 `+8613812345678`。`Phone(country)` 的输出格式。country 参数为 ISO 3166-1 alpha-2 代码（如 `"CN"`、`"US"`）；初始支持集合：CN / US / GB / DE / FR / JP / IT / CA。传入不支持的 country 则 panic。第一版只保证 E.164 语法与国家码正确，不承诺真实号段可分配。

@@ -18,8 +18,8 @@
 
 1. **容器管理 ≠ 旧 `container/` 包**：要纳入散在 `daemon/` 里的容器编排（`lifecycle.go` infra 起停、`cleanup.go` 孤儿清理、Init 引导），整体归 `container/`。
 2. **`orchestrator/` 是相对 testcontainerd 新增的最高层**，承接 doc A §4.2「跨进程编排坍缩为内部顺序」，编排 container + sut（+ 段2 faked + 段3 fixtured）。
-3. **`fixturebase` 不是独立子模块，是客户端代码**：CaseScope / 生成器 / Requirement / Resource 都是测试进程里调用的方法 → 归 `client/fixture`；faked 的客户端调用归 `client/fake`（与 doc A §3「client 与 fixturebase 都是消费端 import」、§5「合一门面合并 faked client + coord client」吻合）。
-4. **`fixtured`（原 coord）是服务端、不是独立服务**：它是 daemon 里「配合 fixture 的 HTTP 协调端点」（锁 / 区段 / 账本），**不独立监听、不独立端口**，handler 与 container 的 lease 接口**共用 daemon 主进程同一个 listener**。
+3. **`client/fixture` 是消费端生成 API**：CaseScope / 唯一值生成器是测试进程里调用的方法 → 归 `client/fixture`；faked 的客户端调用归 `client/fake`。
+4. **`fixtured`（原 coord）是服务端、不是独立服务**：它是 daemon 里「配合 fixture 的 HTTP 协调端点」（锁 / 区段 / 账本 / L0 发号），**不独立监听、不独立端口**，handler 与 container 的 lease 接口**共用 daemon 主进程同一个 listener**。Provision 的公共接口（`Resource` / `Registry` / `PersistEnv` / `Provision`）也归 `fixtured`，使 `mtkit.WithSchema` 不依赖消费端 `client/fixture`。
 
 ### 0.2 为什么另起 mtkit 而非原地改 testcontainerd
 
@@ -65,7 +65,7 @@ mtkit/
 ├── mtkit.go              # 门面:Config/New(注册项校验复用 container.ValidateRegistrations)+ 极薄 Run 转发(→ orchestrator)
 # ── 客户端区(测试进程 import,thin;面向测试作者的消费端 API)──────
 ├── client/
-│   ├── fixture/          # 〔段3〕原 fixturebase:CaseScope/生成器/Requirement/Resource/Registry/provision/persist
+│   ├── fixture/          # 〔段3〕CaseScope/唯一值生成器（消费端）
 │   └── fake/             # 〔段2〕原 faked client:rule 注册链式 builder
 #   注:段1 顶层 client 仅占位;合一门面(段2/3)合并 fixture+fake,不含 lease(lease 是框架内部机制)
 # ── 服务端区(daemon 进程内)──────────────────────────────
@@ -74,7 +74,7 @@ mtkit/
 │   └── protocol/         # lease 控制面协议 DTO(Acquire/HB/Release/State);server 与 client-mode 共用
 ├── container/            # 容器管理(bundle/options/cleanup/infra 起停);lease handler 在 orchestrator
 ├── sut/                  # SUT 监督引擎 + SUTBootPlan(段1 临时含 process_control)
-├── fixtured/             # 〔段3〕fixture 协调内核(WithLock/registry/AllocIDBlock)+ handler(挂 daemon 主端口)+ fixtured/protocol
+├── fixtured/             # 〔段3〕fixture 协调内核(AllocIDBlock/Resource/Registry/PersistEnv/Provision)+ handler(挂 daemon 主端口)+ fixtured/protocol
 ├── faked/                # 〔段2〕fake engine + 服务端,编 cmd/faked 独立子进程,自有端口
 # ── plumbing(leaf 共享)──────────────────────────────
 ├── runtime/              # runtime 文件 Read/Wait/Write + RuntimeInfo(发现 schema)+ 日志落盘(原 tcdruntime)
@@ -124,7 +124,7 @@ mtkit/
 ## 4. 依赖方向不变式（评审主线）
 
 ```text
-mtkit.go ──────────→ orchestrator, container(仅注册项校验), sut, runtime   （门面合成根）
+mtkit.go ──────────→ orchestrator, container(仅注册项校验), sut, runtime, fixtured   （门面合成根；fixtured 仅用于 WithSchema 类型与 provision 包装）
 orchestrator ──────→ orchestrator/client, orchestrator/protocol, container, sut, runtime, constant  (段2:+faked 段3:+fixtured)
 orchestrator/client → orchestrator/protocol, runtime, constant   （re-exec client-mode 内部）
 container ─────────→ (testcontainers/docker SDK)
@@ -133,7 +133,7 @@ sut ───────────────→ runtime, (os/exec, 平台 s
 orchestrator/protocol, fixtured/protocol, faked/protocol, runtime, constant ─→ 标准库   〔leaf〕
 ```
 
-**铁律**：`container`/`sut`/`fixtured` 不得 import `orchestrator`；**顶层 `client`（消费端）不被任何服务端 import**，只走各 leaf `protocol`+`runtime`+`constant`；**client-mode 是 orchestrator 的内部子包 `orchestrator/client`**，故 orchestrator 不依赖外部 client 包（消除「daemon 侧 import 消费端」坏味道）。`mtkit.go` 是门面合成根、不依赖顶层 client。**该不变式由 `test/arch_test.go` 架构守护测试主动回归校验（评审 C2）。**
+**铁律**：`container`/`sut`/`fixtured` 不得 import `orchestrator`；**顶层 `client`（消费端）不被任何服务端 import**，只走各 leaf `protocol`+`runtime`+`constant`；**client-mode 是 orchestrator 的内部子包 `orchestrator/client`**，故 orchestrator 不依赖外部 client 包（消除「daemon 侧 import 消费端」坏味道）。`mtkit.go` 是门面合成根、不依赖顶层 client；段3 起可依赖 `fixtured` 的 provision 公共接口以支撑 `WithSchema`。**该不变式由 `test/arch_test.go` 架构守护测试主动回归校验（评审 C2）。**
 
 ---
 

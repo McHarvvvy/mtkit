@@ -8,7 +8,7 @@
 - `faked-design.md`：**faked**（fake 外部依赖）的实现细节。
 - 本文：**模块 / daemon 视角**——上述能力靠什么样的模块结构与共享服务承载。
 
-本文**不**展开 fixture 层落地细节（`CaseScope` 原语 / `Requirement` / `Registry` / ID 分配 / seeder base）——那部分另起一份。
+本文**不**展开 fixture 层落地细节（`CaseScope` 原语 / `Resource` / `Registry` / ID 分配 / seeder base）——那部分以 `fixture-spec.md` 为准。
 
 ---
 
@@ -55,17 +55,17 @@ fixture 层因此有一项**硬职责**：交付这层隔离。两级并发都�
 
 ```text
 mtkit（按 客户端 / 服务端 / plumbing 分层）
-├── mtkit.go        # 门面：Config/New + 极薄 Run 转发（→ orchestrator，不依赖 client）
+├── mtkit.go        # 门面：Config/New + Run 转发/包装（→ orchestrator，不依赖 client）
 # ── 客户端区（测试进程 import，thin）──────────
 ├── client/
 │   ├── client.go   # lease 客户端 + 合一门面（test runtime）
-│   ├── fixture/    # ← 消费端 import：CaseScope 原语 / 生成器 / Requirement / Resource / Registry（原 fixturebase，包名 fixture）
+│   ├── fixture/    # ← 消费端 import：CaseScope 原语 / 生成器（包名 fixture）
 │   └── fake/       # ← 消费端 import：faked rule 注册（原 faked client）
 # ── 服务端区（daemon = mtkitd 进程内）────────
 ├── orchestrator/   # daemon 编排：生命周期、启动顺序、模式分流、子进程监督；持 daemon 主 HTTP mux
 ├── container/      # 容器管理（原 testcontainerd 核心，降为子模块）+ lease handler
 ├── sut/            # SUT 生命周期引擎 + boot plan 接口（从 container 拆出；段1 临时含进程监督，段2 抽 proc/）
-├── fixtured/       # 协调内核：锁 / 内存 registry / ID 分配；handler 与 lease 共用 daemon 主端口（原 coord，服务端）
+├── fixtured/       # 协调内核：L0 发号 / Resource / Registry / PersistEnv / Provision；handler 与 lease 共用 daemon 主端口（原 coord，服务端）
 ├── faked/          # fake engine + protocol + 服务端；**内嵌 daemon 主进程**（见 §4.1 已修订），由 daemon 进程内直接调用
 # ── plumbing（leaf 共享）────────────────────
 ├── runtime/        # runtime 文件 + RuntimeInfo 发现 schema
@@ -76,7 +76,7 @@ mtkit（按 客户端 / 服务端 / plumbing 分层）
 
 - 消费端测试**代码**只调 `client`（含 `client/fixture`、`client/fake`）的 thin API；它们只依赖各服务端模块的 leaf protocol DTO + `runtime` + 标准库 + HTTP control client + gRPC **客户端** stub。
 - **【已修订】faked engine 内嵌 daemon 主进程**：faked 引擎随测试二进制编译进来（由项目 `TestMain` blank-import fake endpoint 触发 `init()` 自注册），daemon 进程内直接构造调用。原「faked 只在 cmd/faked 独立二进制、不进测试二进制」的依赖隔离目标**作废**——理由见 §4.1 已修订、`faked-integration-plan.md` §0.4。
-- 容器 / `fixtured` / faked 引擎实现 + docker SDK 经 `orchestrator`（daemon-mode 代码路径）链进测试二进制（re-exec 所需）；client 模式不碰这些实现，只经 control API 触达。`mtkit.go` 不依赖 client——模式分流是 orchestrator 职责；**client-mode（re-exec 持租约）是 orchestrator 的内部子包 `orchestrator/client`**，顶层 `client/` 纯为消费端。
+- 容器 / `fixtured` / faked 引擎实现 + docker SDK 经 `orchestrator`（daemon-mode 代码路径）链进测试二进制（re-exec 所需）；client 模式不碰这些实现，只经 control API 触达。`mtkit.go` 不依赖顶层 `client`；段3 起可依赖 `fixtured` 的 provision 公共接口以支撑 `WithSchema`。模式分流是 orchestrator 职责；**client-mode（re-exec 持租约）是 orchestrator 的内部子包 `orchestrator/client`**，顶层 `client/` 纯为消费端。
 - 测试进程与 daemon 间只走 **control API（HTTP）+ runtime 文件**这条「网线」，不在两侧共享 Go 调用——这是隔离的真正边界。
 
 ---
@@ -139,7 +139,7 @@ AllocIDBlock(kind, size) -> [start, end)   // 唯一 ID 区块分配（PrimarySc
 
 ## 5. 消费面 API
 
-- 对业务方暴露**一个 test runtime 门面**（`client` 合一），内部合并：`client/fake`（注册 rule）+ `client/fixture`（内部调 `fixtured`：锁 / registry / ID）。
+- 对业务方暴露测试侧 API：`client/fake` 注册 rule，`client/fixture` 提供 CaseScope 生成 API；provision 通过 `mtkit.WithSchema([]fixtured.Resource)` 接入。
 - 项目侧一个薄 `bootstrap` 包：配 `mtkit`（容器集 + SUT boot plan）、装配 daemon-mode 的 faked 监督 + `fixtured`，暴露 `Run(m)`。各测试包 `TestMain` 单行调 `bootstrap.Run(m)`。
 - client 模式测试体：`scope.New` → seeder（**直连写数据**，地址来自 runtime 文件，跨进程协调来自 `client/fixture`）→ request → observe。
 - 按包 provision / 写数据的数据流（测试进程侧）：
@@ -194,7 +194,7 @@ faked **内嵌 daemon 主进程**（理由见 §4.1 已修订、`faked-integrati
 | ------------------------------------------------------------------------ | --------------------------------------------------------------------------------- |
 | 容器编排引擎、`ManagedProcess` / SUT boot plan **接口**                  | 要哪些容器、SUT 怎么起（启动地板）                                                |
 | faked engine + client + endpoint **注册机制**                            | 具体 fake endpoint（`forum` / `googlepay`…，留项目侧、由测试二进制 `import _` 自注册） |
-| `fixtured` 内核 + `Requirement` / `Resource` / `Registry` **接口**、ID 分配器 | 具体 schema 声明、seeder / recipe、CaseScope 字段提供者                           |
+| `fixtured` 内核 + `Resource` / `Registry` / `PersistEnv` **接口**、ID 分配器 | 具体 schema 声明、seeder / recipe、CaseScope 字段提供者                           |
 
 注入点：`mtkit.New(cfg, registerContainers)` 的容器注册回调、`SUTBootPlan` 接口、schema 声明函数、**项目 `TestMain` bootstrap 的 `import _` fake endpoint**（触发 `init()` 自注册进内嵌 faked 引擎，见 §4.1 已修订）。
 
@@ -212,8 +212,8 @@ faked **内嵌 daemon 主进程**（理由见 §4.1 已修订、`faked-integrati
 **演进阶段**：
 
 1. **P1**：faked 引擎迁入 mtkit、从「测试进程 fork」改为「**daemon 进程内内嵌**」（§4.1 已修订；**不做 reload**）；启动顺序坍缩进 daemon；SUT env 注入 faked 地址（待 SUT 消费侧就绪）。详见 `faked-integration-plan.md`。
-2. **P2**：`fixtured` 协调内核（内存锁 + registry + ID 分配）+ `client/fixture` 内的协调客户端；`sut` 从 `container` 拆出、泛化 `ManagedProcess`（连同进程控制抽出 `proc/`）。
-3. **P3**：`client/fixture`（CaseScope 原语 + `Requirement` / `Resource` / `Registry` 接口）——详见后续 fixture 文档。
+2. **P2**：`fixtured` 协调内核（L0 发号 + registry/provision 公共接口）+ `client/fixture` 生成 API；`sut` 从 `container` 拆出、泛化 `ManagedProcess`（连同进程控制抽出 `proc/`）。
+3. **P3**：`client/fixture`（CaseScope 原语）与 `fixtured` provision 能力——详见 `fixture-spec.md`。
 4. **P-later**：手动 serve 入口；component 内存包。
 
 **迁移而非原地改名**：`testcontainerd` 在用、API 改动大，故另起 `mtkit` 新包、把其能力迁入（段1，见 `mtkit-migration-plan.md`），迁移期两者并存，段2/3 成熟后 testcontainerd 退役。
