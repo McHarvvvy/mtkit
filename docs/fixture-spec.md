@@ -36,7 +36,7 @@ L2  塑形         ── 在 L1 载荷上加纯格式：UUID / email / dashed�
 
 对形态 S（值空间 `cap = |cs|^n`），只要喂给 `permute` 的 token 都 `< cap`，S 的产出两两不同。证明：token 构成全局序列的子集 `T_S`，元素两两不同（全局单调）；`permute(·, cap)` 是双射，双射限制到子集仍是单射。∎
 
-多个形态共用一条全局序列，**不影响"任一形态在其 cap 内不重复"**，因此不需要为每个形态分配独立序列。
+多个形态共用一条全局序列：对 ① 档（`cap ≥ 2⁶³`）不影响其不重复性（token 恒 `< cap`）；对 `cap < 2⁶³` 的形态，则意味着其别名阈值由**全局**累计生成量、而非自身生成量决定（见三档契约）。v1 据此**不为每个形态分配独立序列**——代价是窄形态的安全边界比"自身生成量"看起来更紧。
 
 ### 为什么否决"hash 然后 mod"
 
@@ -44,15 +44,21 @@ L2  塑形         ── 在 L1 载荷上加纯格式：UUID / email / dashed�
 
 ### 三档唯一性契约
 
-底层 token 是 int64，从 0 单调递增，上界 ≈ `2⁶³ ≈ 9.2×10¹⁸`。一个形态是否重复，只取决于其值空间 `cap` 与实际生成量的关系：
+底层 token 是 int64，从 0 单调递增，上界 ≈ `2⁶³ ≈ 9.2×10¹⁸`。**关键前提：所有形态共用同一条全局 token 序列（§1.3 单一 `blockSource` / 单一 daemon 计数器）。** 因此决定某形态是否别名的，不是它自己生成了多少，而是**生成该形态时全局计数器 `G` 已走到多大**——`G` ≈ daemon 启动以来所有形态的累计生成次数。
 
-| 档               | 条件                          | 含义                                    | 落档示例                                              |
-| ---------------- | ----------------------------- | --------------------------------------- | ----------------------------------------------------- |
-| **① 无条件唯一** | `cap ≥ 2⁶³`                   | token 永远 `< cap`，任何运行量都不重复  | UUID(32 hex)、hex `n≥16`、alnum `n≥11`、digit `n≥19` |
-| **② 实践安全**   | 运行量 `≪ cap < 2⁶³`          | 调用方确认现实测试量远小于 cap 时，可视为不重复；框架不做运行期排重 | 10 位 uid(`10¹⁰≈2³³`)、12 位 lower、email local-part |
-| **③ 有概率重复** | `cap ≲` 运行量（≤6 字符窄串） | token 可能溢出 cap，`mod` 折叠后静默别名 | digit `n≤6`、hex `n≤5`、短验证码                     |
+`permute` 是真双射（不是 hash），碰撞行为是**二值阈值**而非概率：`G < cap` 时所有 token `< cap`、残差两两不同，碰撞**恰为 0**；`G ≥ cap` 时第 `cap+1` 个 token 经 `mod cap` 与某更早 token 同残差，**确定性撞车**（非小概率）。
 
-> **重要**：10 位 uid 属 **②** 而非 **①**——它是"运行量远小于 10¹⁰ 所以现实安全"，不是"无条件唯一"。文档与注释中**不得**将 ② 模糊表述为"保证唯一"。
+| 档               | 条件                           | 含义                                                      | 落档示例                                                    |
+| ---------------- | ------------------------------ | --------------------------------------------------------- | ----------------------------------------------------------- |
+| **① 无条件唯一** | `cap ≥ 2⁶³`                    | `G` 受 int64 上界限制恒 `< cap`，碰撞**严格为 0**，无条件 | UUID(32 hex)、hex `n≥16`、alnum `n≥11`、digit `n≥19`        |
+| **② 实践安全**   | `cap < 2⁶³` 且现实 `G ≪ cap`   | 全局累计生成量远小于 cap 时视为不重复；框架不做运行期排重 | 10 位 uid(`10¹⁰≈2³³`)、12 位 lower(`2⁵⁶`)、email local-part |
+| **③ 有概率重复** | `cap ≲` 现实可达的 `G`（窄串） | 全局计数器越过 cap，`mod` 折叠后静默别名                  | digit `n≤6`、hex `n≤5`、短验证码                            |
+
+> **重要 ①**：判据是**全局计数器 `G`，不是该形态自身的生成量**。一个 6 位验证码（`cap=10⁶`）即便整套测试只生成过一次，只要此前全局累计生成量已超 `10⁶`，照样确定性别名。**文档与注释中不得用"该形态运行量"论证安全。**
+>
+> **重要 ②**：10 位 uid 属 **②** 而非 **①**——是"全局生成量远小于 `10¹⁰` 所以现实安全"，不是"无条件唯一"。
+>
+> **重要 ③**：**要求全局唯一却用短串（③ 档）本身是调用方设计缺陷**，框架不为此兜底；需要全局唯一标识请用 ① 档形态（hex `n≥16` / alnum `n≥11` / UUID）。
 
 各字符集落入 ① 档的最小长度：
 
@@ -105,7 +111,7 @@ func (b *blockSource) Next() (int64, error) {
 }
 ```
 
-- **进程内单例**，所有 `CaseScope`（同进程跨用例）共享；`mu` 只在补块时短暂持有，热路径几乎无竞争。
+- **进程内单例**，所有 `CaseScope`（同进程跨用例）共享。热路径是纯本地自增、几乎无竞争；但**补块（冷路径）会持 `mu` 做一次同步 HTTP 往返（超时 5s），期间阻塞进程内所有生成**——每 65536 次才一次、且为本机回环，实践开销可忽略，但它不是“极短临界区”。
 - `blockSource` 是**包内接缝**，不进公共签名；纯逻辑单测可注入 trivial fake（见 §2.4）。
 
 ## 1.4 L1 单射：Feistel FPE + base 编码
@@ -118,7 +124,7 @@ split = ⌈√cap⌉                        // 值空间拆成近似两半
 
 feistelOnce(v):                       // [0, split²) 上的一次置换
     L, R = v / split, v % split
-    for i in 0..3:                     // 4 轮，≥3 轮即双射
+    for i in 0..3:                     // 4 轮；任意轮数皆双射，取 4 轮为扩散
         F = SHA256(key ‖ i ‖ R) mod split
         L, R = R, (L + F) % split
     return L*split + R
@@ -133,6 +139,8 @@ UniqueString = encode(permute(token), n, cs)  // base |cs| 编码，低位在右
 ```
 
 轮函数用固定 key 的 keyed SHA-256，映射确定可复现。cycle-walking 期望迭代 < 2 次（`split²` 仅略大于 `cap`）。
+
+**双射性与轮数无关**：平衡 Feistel 单轮即可逆（给定输出可逐轮逆推 `L,R`），取 4 轮是为足够的扩散 / 伪随机外观（规避下文仿射退化那类长前缀），不是双射的前提。
 
 > **spike 教训**：早期用"仿射乘法 `y=(token·M+B) mod cap`，M 取梅森素数 2¹²⁷−1"，在 2 的幂模数下退化为 `y≈B−token`（M ≡ −1），产生 `0000…` 长前缀。压力测试当场暴露，遂改 Feistel。**单次模乘不是可靠的扩散器，勿用。**
 
@@ -240,14 +248,14 @@ assert.Equal(t, deviceUUID, getDevice(t).UUID)
 
 算法由 `test/spike/unique/unique_test.go` 实测背书，可用 `go test -race -count=3 ./test/spike/unique/...` 复现：
 
-| 测试                                      | 验证                              | 结果                            |
-| ----------------------------------------- | --------------------------------- | ------------------------------- |
-| `Token_Concurrent_SingleProcess`          | 同进程跨 goroutine + 频繁补块竞态 | 128 万 token 零重复             |
-| `Token_MultiProcess_GlobalUnique`         | 共享 allocator + 多进程多协程     | 128 万 token 全局零重复         |
-| `Permute_IsBijection_Exhaustive`          | 置换双射穷举（hex/decimal/base62）| distinct == cap                 |
-| `UniqueString_EndToEnd`                   | 完整管线多进程多协程              | 100 万串零碰撞、长度/字符集合法 |
-| `UniqueHex32_UUID`                        | UUID 格式 + 32hex                 | 50 万零碰撞                     |
-| `FirstCharSpread` / `AllPositionsSpread`  | 全宽扩散                          | 每位 ≥8/16 符号                 |
+| 测试                                     | 验证                               | 结果                            |
+| ---------------------------------------- | ---------------------------------- | ------------------------------- |
+| `Token_Concurrent_SingleProcess`         | 同进程跨 goroutine + 频繁补块竞态  | 128 万 token 零重复             |
+| `Token_MultiProcess_GlobalUnique`        | 共享 allocator + 多进程多协程      | 128 万 token 全局零重复         |
+| `Permute_IsBijection_Exhaustive`         | 置换双射穷举（hex/decimal/base62） | distinct == cap                 |
+| `UniqueString_EndToEnd`                  | 完整管线多进程多协程               | 100 万串零碰撞、长度/字符集合法 |
+| `UniqueHex32_UUID`                       | UUID 格式 + 32hex                  | 50 万零碰撞                     |
+| `FirstCharSpread` / `AllPositionsSpread` | 全宽扩散                           | 每位 ≥8/16 符号                 |
 
 > spike 早期含 per-shape kind 与 budget tripwire 测试，对应早期 per-shape / fail-loud 取向；最终设计已改为单一全局 kind + 静默全函数，落代码阶段统一对齐。
 
@@ -272,10 +280,12 @@ Content-Type: application/json
 
 请求体：{"kind": "token", "size": 65536}
 成功响应：{"start": 0, "end": 65536}
-错误响应：{"ok": false, "error": "invalid_size", "message": "size must be positive"}
+错误响应：{"code": "invalid_size", "message": "size must be positive"}
 ```
 
-路由前缀 `/v1/fixture/`，与 lease（`/v1/`）和 faked（`/v1/grpc/`、`/v1/http/`）不冲突。鉴权复用 daemon `withAuth`（`X-Mtkit-Token` 对比 `cfg.Token`）。v1 只有 `"token"` 一个 kind；kind 字段为后续扩展预留。
+路由前缀 `/v1/fixture/`，与 lease（`/v1/`）和 faked（`/v1/grpc/`、`/v1/http/`）不冲突。鉴权复用 daemon `withAuth`（`X-Mtkit-Token` 对比 `cfg.Token`）。v1 只有 `"token"` 一个 kind（常量 `protocol.KindToken`）；kind 字段为后续扩展预留。
+
+**错误信封**：fixture 控制面与 daemon lease/faked 统一用 `{code,message}`（`fixtured/protocol.ErrorResp` 与 `orchestrator/protocol.ErrorResp` JSON 兼容），客户端可用同一结构解析 fixture handler 与 daemon 鉴权失败两类错误。**size 上界**：除 `size > 0` 外另设 `maxAllocSize = 1<<20`，超限返回 `invalid_size`，防异常请求吃掉 token 值空间。
 
 ### Allocator 与 Server
 
@@ -438,7 +448,13 @@ Provision 解决的核心问题：**测试前置数据（建表、种子数据�
 
 三个核心组件：`Resource` 声明要建什么；`Registry` 提供分布式互斥 + 已应用账本；`PersistEnv` 提供进程级连接池。
 
-**包归属**：本章接口与实现归 `fixtured` 包，而不是 `client/fixture`。`client/fixture` 只承载 CaseScope 与 L1/L2 生成 API；provision 属 daemon 协调域的公共机制。这样 `mtkit.WithSchema` 可接收 `[]fixtured.Resource`，避免门面层依赖消费端 `client/fixture`。
+**包归属**：provision 的全部类型与实现归 **`client/fixture`** 包——它们都在**测试（client）进程**内执行（`PersistEnv` 连真实 DB、`Provision` 跑在 client 模式的 `provisionRunnable` 里），与 daemon 无关；daemon 在 provision 中唯一职责是启动时重置账本（§3.3）。因此：
+
+- `client/fixture`（仅测试侧）：CaseScope / L1 / L2 生成 API **＋** `Resource` / `Provision` / `Registry` / `FileRegistry` / `PersistEnv` / 文件锁。
+- `fixtured`（仅 daemon）：只剩 `Server` / `Allocator`，不含任何测试侧代码。
+- `fixtured/protocol`（leaf）：两侧共享的 wire 契约（请求 / 响应、路径常量）**＋**账本文件名常量；`fixtured`（Server）与 `client/fixture`（HTTP client、账本路径）各自 import 它，互不 import 对方逻辑包，无环。
+
+`mtkit.WithSchema` 接收 `[]fixture.Resource`，门面 import `client/fixture`——无环且无害（早期"避免门面依赖消费端"的顾虑不成立）。**原则：daemon 逻辑包与测试侧逻辑包互不 import，唯一共享物是 `fixtured/protocol` leaf。**
 
 ## 3.1 Resource
 
@@ -447,7 +463,7 @@ Provision 解决的核心问题：**测试前置数据（建表、种子数据�
 // Apply 在 Registry 互斥内、且 key 未注册时被调用；多条写入须用事务包装，保证重试安全。
 type Resource interface {
     Key() string
-    Apply(ctx context.Context, env PersistEnv) error
+    Apply(ctx context.Context, env *PersistEnv) error
 }
 ```
 
@@ -479,11 +495,13 @@ type Registry interface {
 
 **生命周期**：daemon 在 `Start()` 时写入 `{"applied":[]}`，与 daemon/容器生命周期严格绑定——daemon 重启则文件重置，账本与数据同步清零，不会出现"账本说已 applied 但表不存在"的状态。
 
-**互斥**：整文件一把锁（Linux/Mac `flock`，Windows `LockFileEx`），`EnsureOnce` 持锁期间执行完整的"读 → 检查 → 执行 → 写"流程。provision 是低频启动操作，粒度粗但竞争窗口极短。
+**重要（时序约束）**：账本截断必须 **happens-before daemon 对外可发现**（绑定监听端口 / 写 `mtkit.runtime.json`）。否则存在竞态：新 daemon（新容器=空数据）若先写 runtime 让 client 拿到租约、再截断账本，client 可能 `EnsureOnce` 读到**上一代 daemon 残留账本**，误判已 applied 而跳过建表，导致新容器里表不存在——正是本机制要消灭的状态。实现上 daemon `Start()` 须在绑定端口 / 写 runtime 之前同步完成账本写空。
+
+**互斥**：整文件一把锁（Linux/Mac `flock`，Windows `LockFileEx`），`EnsureOnce` 持锁期间执行完整的"读 → 检查 → 执行 → 写"流程。**注意：持锁贯穿 `fn`（即 `Apply`），临界区时长 = 最慢一次 `Apply`（建表 / 灌种子，可能含网络 DDL），且整文件一把锁会让所有进程、所有 key 串行化。** 这是为保证"检查 + 执行 + 标记"原子性而有意为之（否则两进程会同时建表）；provision 低频、DDL 用 `IF NOT EXISTS`，串行成本可接受，但不要理解为"窗口极短"。
 
 **等锁超时**：ctx 取消则立即返回 `ctx.Err()`，fn 不执行，key 不被标记。未设截止时间时默认 **30s**——provision 在启动阶段，进程卡死的危害远大于超时报错；超时后 error 向上传播，`log.Fatal` 终止该测试包。
 
-**路径发现**：`filepath.Join(filepath.Dir(runtimePath), "mtkit.provision.json")`，无需修改 `RuntimeInfo`。
+**路径发现**：`protocol.LedgerPath(runtimePath)`（= 与 runtime 同目录下的 `protocol.LedgerFileName`），daemon 与 client 共用此函数，无需修改 `RuntimeInfo`。
 
 ```go
 type FileRegistry struct { /* ... */ }
@@ -500,11 +518,15 @@ func NewFileRegistry(ledgerPath string) *FileRegistry
 // PersistEnv 提供测试基础设施连接，供 Resource.Apply 使用。
 // 连接懒初始化，按 sutEnvKey 在进程内缓存复用。
 // sutEnvKey = sut_env map 的 key，如 "MYSQL_DSN"，不是容器名或数据库名。
-type PersistEnv interface {
-    MySQL(sutEnvKey string) *sql.DB
-    Redis(sutEnvKey string) redis.UniversalClient
-    Mongo(sutEnvKey string) *mongo.Client
-}
+//
+// 刻意用**具体 struct 而非 interface**：唯一消费者 Resource.Apply 是真 I/O（对真实
+// testcontainers 跑 DDL），没有可独立单测的纯逻辑，丢掉接口替换缝无实际损失；换来的是
+// 新增后端只需**加方法**，纯增量——不破坏任何调用方，也没有 mock 实现要同步更新。
+type PersistEnv struct { /* sutEnv + 懒连接缓存 */ }
+
+func (e *PersistEnv) MySQL(sutEnvKey string) *sql.DB
+func (e *PersistEnv) Redis(sutEnvKey string) redis.UniversalClient
+func (e *PersistEnv) Mongo(sutEnvKey string) *mongo.Client
 ```
 
 `sutEnvKey` 来自 `RuntimeInfo.SUTEnv`（`mtkit.runtime.json` 的 `sut_env` 字段）。多容器、多数据库靠不同 key 区分：
@@ -519,7 +541,7 @@ REDIS_ADDR         →  redis 容器
 
 ```go
 // NewPersistEnv 创建进程级连接池；sutEnv 即 RuntimeInfo.SUTEnv。连接懒初始化。
-func NewPersistEnv(sutEnv map[string]string) PersistEnv
+func NewPersistEnv(sutEnv map[string]string) *PersistEnv
 
 v1 实现范围：
 
@@ -544,7 +566,7 @@ func RedisNS(sutEnvKey, key, ns string) Resource
 
 ```go
 // test/fixture/resources/mysql.go
-var UserTable = fixtured.MySQLTable(
+var UserTable = fixture.MySQLTable(
     "MYSQL_DSN",
     "mysql.mssiot_user.users",
     `CREATE TABLE IF NOT EXISTS users (uid BIGINT PRIMARY KEY, ...) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
@@ -564,13 +586,13 @@ test/fixture/resources/        ← 共享稳定 Resource 定义
 
 test/infra/                    ← 集成测试包
     setup_test.go              → TestMain
-    requirements_test.go       → func requirements() []fixtured.Resource
+    requirements_test.go       → func requirements() []fixture.Resource
 ```
 
 ```go
 // requirements_test.go
-func requirements() []fixtured.Resource {
-    return []fixtured.Resource{resources.UserTable, resources.TokenCache}
+func requirements() []fixture.Resource {
+    return []fixture.Resource{resources.UserTable, resources.TokenCache}
 }
 ```
 
@@ -579,7 +601,7 @@ func requirements() []fixtured.Resource {
 ```go
 // Provision 遍历 resources，对每个资源调 EnsureOnce。
 // 同一 daemon 生命周期内，同一 key 只 Apply 一次（跨进程安全）。
-func Provision(ctx context.Context, reg Registry, env PersistEnv, resources []Resource) error {
+func Provision(ctx context.Context, reg Registry, env *PersistEnv, resources []Resource) error {
     for _, r := range resources {
         if _, err := reg.EnsureOnce(ctx, r.Key(), func() error {
             return r.Apply(ctx, env)
@@ -597,7 +619,7 @@ Apply 失败返回带 key 的错误，由调用方 `log.Fatal` 终止。`EnsureO
 
 ```go
 // WithSchema 注册需要 provision 的资源列表，多次调用追加。
-func (t *MTKit) WithSchema(resources []fixtured.Resource) *MTKit
+func (t *MTKit) WithSchema(resources []fixture.Resource) *MTKit
 
 // Run 内部，通过包装 Runnable 在 client-mode Acquire 成功后、m.Run() 前执行。
 if len(t.schemaResources) > 0 {
@@ -606,9 +628,9 @@ if len(t.schemaResources) > 0 {
     if err != nil {
         log.Fatalf("read mtkit runtime for provision: %v", err)
     }
-    reg := fixtured.NewFileRegistry(ledgerPath)
-    env := fixtured.NewPersistEnv(ri.SUTEnv)
-    if err := fixtured.Provision(ctx, reg, env, t.schemaResources); err != nil {
+    reg := fixture.NewFileRegistry(ledgerPath)
+    env := fixture.NewPersistEnv(ri.SUTEnv)
+    if err := fixture.Provision(ctx, reg, env, t.schemaResources); err != nil {
         log.Fatalf("provision failed: %v", err)
     }
 }

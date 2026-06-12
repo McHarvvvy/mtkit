@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	fixture "github.com/McHarvvvy/mtkit/client/fixture"
 	"github.com/McHarvvvy/mtkit/container"
 	mtfaked "github.com/McHarvvvy/mtkit/faked"
 	"github.com/McHarvvvy/mtkit/orchestrator"
@@ -70,6 +71,7 @@ type MTKit struct {
 	registerContainers RegisterContainersFunc
 	registrations      []container.ContainerRegistration
 	sut                SUTBootPlan
+	schemaResources    []fixture.Resource
 }
 
 // New 创建 MTKit 实例。
@@ -109,6 +111,13 @@ func (t *MTKit) RegisterSUT(plan SUTBootPlan) *MTKit {
 	return t
 }
 
+// WithSchema 注册需 provision 的资源列表，多次调用追加。
+// 资源在 client 模式 Acquire 成功后、m.Run() 前按 daemon 生命周期幂等执行一次（见 orchestrator.provisionRunnable）。
+func (t *MTKit) WithSchema(resources []fixture.Resource) *MTKit {
+	t.schemaResources = append(t.schemaResources, resources...)
+	return t
+}
+
 // Run 是 TestMain 的统一执行入口。
 func (t *MTKit) Run(m Runnable) int {
 	if t.registerContainers == nil {
@@ -141,6 +150,7 @@ func (t *MTKit) Run(m Runnable) int {
 		SUT:                 t.sut,
 		Faked:               toFakedEngineConfig(t.cfg.Faked, t.cfg.RuntimeDir),
 		FakedEnabled:        t.cfg.Faked.Enabled,
+		SchemaResources:     t.schemaResources,
 		ContainerRegistries: t.registrations,
 	}, m)
 }

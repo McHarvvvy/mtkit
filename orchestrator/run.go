@@ -8,10 +8,13 @@ import (
 	"syscall"
 	"time"
 
+	fixture "github.com/McHarvvvy/mtkit/client/fixture"
 	"github.com/McHarvvvy/mtkit/constant"
 	"github.com/McHarvvvy/mtkit/container"
 	mtfaked "github.com/McHarvvvy/mtkit/faked"
+	"github.com/McHarvvvy/mtkit/fixtured/protocol"
 	"github.com/McHarvvvy/mtkit/orchestrator/client"
+	mtruntime "github.com/McHarvvvy/mtkit/runtime"
 	"github.com/McHarvvvy/mtkit/sut"
 )
 
@@ -33,6 +36,7 @@ type RunConfig struct {
 	SUT               sut.SUTBootPlan
 	Faked             mtfaked.Config
 	FakedEnabled      bool
+	SchemaResources   []fixture.Resource
 	// ContainerRegistries 是门面已校验（ValidateRegistrations）的容器注册项；
 	// daemon 模式直接消费，空切片由 Daemon.New → NewBundle 兜底 fail-loud。
 	ContainerRegistries []container.ContainerRegistration
@@ -52,11 +56,11 @@ func runDaemonMode(cfg RunConfig) int {
 	regs := cfg.ContainerRegistries
 
 	dcfg := Config{
-		Addr:        cfg.DaemonAddr,
-		Token:       cfg.DaemonToken,
-		Project:     cfg.Project,
-		RuntimePath: cfg.RuntimePath,
-		RuntimeDir:  cfg.RuntimeDir,
+		Addr:         cfg.DaemonAddr,
+		Token:        cfg.DaemonToken,
+		Project:      cfg.Project,
+		RuntimePath:  cfg.RuntimePath,
+		RuntimeDir:   cfg.RuntimeDir,
 		IdleTTL:      cfg.DaemonIdleTTL,
 		Faked:        cfg.Faked,
 		FakedEnabled: cfg.FakedEnabled,
@@ -80,11 +84,36 @@ func runClientMode(cfg RunConfig, m Runnable) int {
 	if m == nil {
 		return 1
 	}
+	runnable := m
+	if len(cfg.SchemaResources) > 0 {
+		runnable = provisionRunnable{cfg: cfg, next: m}
+	}
 	// client 模式的完整生命周期（连接/自启 daemon → 持租约 → 心跳 → 运行 → 释放）
 	// 内聚在 orchestrator/client，这里只做配置转发。
 	return client.RunUnderLease(context.Background(), client.Config{
 		Project:     cfg.Project,
 		RuntimePath: cfg.RuntimePath,
 		HTTPTimeout: cfg.ClientHTTPTimeout,
-	}, m)
+	}, runnable)
+}
+
+type provisionRunnable struct {
+	cfg  RunConfig
+	next Runnable
+}
+
+func (r provisionRunnable) Run() int {
+	ri, err := mtruntime.Read(r.cfg.RuntimePath)
+	if err != nil {
+		log.Printf("read mtkit runtime for provision: %v", err)
+		return 1
+	}
+	ledgerPath := protocol.LedgerPath(r.cfg.RuntimePath)
+	reg := fixture.NewFileRegistry(ledgerPath)
+	env := fixture.NewPersistEnv(ri.SUTEnv)
+	if err := fixture.Provision(context.Background(), reg, env, r.cfg.SchemaResources); err != nil {
+		log.Printf("provision failed: %v", err)
+		return 1
+	}
+	return r.next.Run()
 }

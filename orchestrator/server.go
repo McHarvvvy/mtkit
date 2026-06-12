@@ -17,6 +17,8 @@ import (
 	mtconstant "github.com/McHarvvvy/mtkit/constant"
 	"github.com/McHarvvvy/mtkit/container"
 	mtfaked "github.com/McHarvvvy/mtkit/faked"
+	"github.com/McHarvvvy/mtkit/fixtured"
+	fixtureproto "github.com/McHarvvvy/mtkit/fixtured/protocol"
 	"github.com/McHarvvvy/mtkit/orchestrator/protocol"
 	mtruntime "github.com/McHarvvvy/mtkit/runtime"
 	"github.com/McHarvvvy/mtkit/sut"
@@ -54,6 +56,7 @@ type Daemon struct {
 	startedAt   time.Time
 	runtimePath string
 	runtimeInfo mtruntime.RuntimeInfo // Start 写入的基线，faked/sut env 就绪后追加段重写
+	fixtured    *fixtured.Server      // daemon-hosted fixture coordination API
 	faked       *mtfaked.Server       // nil 表示 faked 未启用
 	fakedEnv    map[string]string     // ensureFakedStarted 暂存的 faked 注入 env
 	sutEnvReady bool                  // prepareSUTEnv 是否已组装并落盘（幂等）
@@ -140,6 +143,7 @@ func New(cfg Config, regs []container.ContainerRegistration, opts ...Option) (*D
 		store:       newLeaseStore(),
 		startedAt:   time.Now(),
 		runtimePath: cfg.RuntimePath,
+		fixtured:    fixtured.New(),
 		faked:       fakedServer,
 		sut:         sut.NewManager(cfg.SUTConfig, cfg.SUT, sutInput),
 		done:        make(chan struct{}),
@@ -166,6 +170,11 @@ func (d *Daemon) Start(ctx context.Context) error {
 	if err := d.cleaner.CleanupOrphans(ctx, d.regs); err != nil {
 		return err
 	}
+	// 时序约束：账本必须在绑定端口 / 写 runtime（对外可发现）之前写空，
+	// 否则 client 可能拿到租约后读到上一代残留账本，误判已 applied 而跳过建表（见 fixtured.InitFileLedger）。
+	if err := fixtured.InitFileLedger(fixtureproto.LedgerPath(d.runtimePath)); err != nil {
+		return err
+	}
 
 	mux := http.NewServeMux()
 	d.registerLeaseRoutes(mux)
@@ -175,8 +184,7 @@ func (d *Daemon) Start(ctx context.Context) error {
 		// 避免同机其它进程误调用注入 fake 规则（与段3 fixtured 的 RegisterRoutes(mux, d.withAuth) 一致）。
 		d.faked.RegisterControl(mux, d.withAuth)
 	}
-	// 段3 预留：fixtured 协调路由在此追加，与 lease 共用同一 mux / 端口 / 鉴权：
-	//   d.fixtured.RegisterRoutes(mux, d.withAuth)
+	d.fixtured.RegisterRoutes(mux, d.withAuth)
 
 	ln, err := net.Listen(mtconstant.ProtocolTCP, d.cfg.Addr)
 	if err != nil {
@@ -306,16 +314,16 @@ func (d *Daemon) handleState(w http.ResponseWriter, r *http.Request) {
 		fakedState = d.faked.Snapshot()
 	}
 	state := protocol.StateResp{
-		InfraReady:     d.bundle.Started(),
-		ActiveLeases:   active,
-		Containers:     d.bundle.Containers(),
-		StartedAt:      d.startedAt,
-		IdleTTLSecond:  int(d.cfg.IdleTTL.Seconds()),
-		AppReady:       sutState.Ready,
-		AppPID:         sutState.PID,
-		AppStartedAt:   sutState.StartedAt,
-		AppRestarts:    sutState.RestartCount,
-		AppLastError:   sutState.LastError,
+		InfraReady:    d.bundle.Started(),
+		ActiveLeases:  active,
+		Containers:    d.bundle.Containers(),
+		StartedAt:     d.startedAt,
+		IdleTTLSecond: int(d.cfg.IdleTTL.Seconds()),
+		AppReady:      sutState.Ready,
+		AppPID:        sutState.PID,
+		AppStartedAt:  sutState.StartedAt,
+		AppRestarts:   sutState.RestartCount,
+		AppLastError:  sutState.LastError,
 		// faked 内嵌：随 daemon 生命周期，无独立 PID / 重启计数 / 进程级错误。
 		FakedReady:     fakedState.Ready,
 		FakedStartedAt: fakedState.StartedAt,
