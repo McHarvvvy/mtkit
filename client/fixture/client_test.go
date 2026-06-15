@@ -1,19 +1,15 @@
 package fixture
 
 import (
-	"bytes"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
-	"net/url"
-	"regexp"
+	"errors"
 	"sync"
 	"testing"
 
-	"github.com/McHarvvvy/mtkit/fixtured"
 	"github.com/McHarvvvy/mtkit/fixtured/protocol"
 )
 
+// seqSource 是包内测试共用的确定性 token 源：从 0 单调自增、并发安全。
+// 注入它可绕过 HTTP 层，让生成/算法用例对"喂进去的 token 序列"完全可控（见 newScopeWith）。
 type seqSource struct {
 	mu sync.Mutex
 	n  int64
@@ -27,6 +23,11 @@ func (s *seqSource) Next() (int64, error) {
 	return v, nil
 }
 
+// TestBlockSourceFetchesOnlyWhenExhausted 守护 HiLo 缓存契约：区块内纯本地自增，仅在耗尽时才远调补块。
+//
+// 验证手段：用块大小 2、两段预置区块的 fake fetch，连取 4 个 token，断言取值恰为两段区块内容
+// 且 fetch 只发生在区块边界（耗尽时）。这验证的是"取号语义正确"，补块次数是该语义的直接可观察结果
+// （区块边界），非内部机制。
 func TestBlockSourceFetchesOnlyWhenExhausted(t *testing.T) {
 	blocks := [][2]int64{{0, 2}, {10, 12}}
 	var calls int
@@ -56,91 +57,39 @@ func TestBlockSourceFetchesOnlyWhenExhausted(t *testing.T) {
 	}
 }
 
-func TestHTTPClientFetchesFromFixtured(t *testing.T) {
-	srv := fixtured.New()
-	mux := http.NewServeMux()
-	srv.RegisterRoutes(mux, nil)
-	ts := httptest.NewServer(mux)
-	defer ts.Close()
-
-	u, err := url.Parse(ts.URL)
-	if err != nil {
-		t.Fatal(err)
+// TestBlockSourceSurfacesFetchFailure 守护"基建故障不静默产坏数据"契约（B4）的可测观察面：
+// daemon 不可达时取号必须以 error 上抛（上层 CaseScope.next 据此 t.Fatalf 终止用例）。
+//
+// 验证手段：注入一个永远失败的 fetch，断言 Next 返回非 nil error——若实现吞掉了 fetch 错误并
+// 返回一个伪造 token，本用例会因 err==nil 而失败，从而抓住"静默坏数据"这一最危险的退化。
+// （为什么不在 CaseScope 层验 t.Fatalf：testing.TB 是密封接口、包外无法伪造；t.Fatalf 黏合本身
+// 平凡，错误上抛由此用例护住即可。）
+func TestBlockSourceSurfacesFetchFailure(t *testing.T) {
+	src := &blockSource{
+		size: 2,
+		kind: protocol.KindToken,
+		fetch: func(string, int64) (int64, int64, error) {
+			return 0, 0, errors.New("daemon unreachable")
+		},
 	}
-	client := New(u.Host, "")
-	scope := client.NewScope(t)
-
-	first := scope.UniqueHex(16)
-	second := scope.UniqueHex(16)
-	if first == second {
-		t.Fatalf("expected distinct values, got %q", first)
-	}
-}
-
-func TestUniqueStringIsBijectionWithinSmallCapacity(t *testing.T) {
-	src := &seqSource{}
-	scope := newScopeWith(t, src)
-	seen := make(map[string]bool, 256)
-	for i := 0; i < 256; i++ {
-		v := scope.UniqueString(2, Hex)
-		if seen[v] {
-			t.Fatalf("duplicate value %q at token %d", v, i)
-		}
-		seen[v] = true
-	}
-	if len(seen) != 256 {
-		t.Fatalf("distinct count = %d, want 256", len(seen))
+	if _, err := src.Next(); err == nil {
+		t.Fatal("expected error when fetch fails, got nil (silent bad token)")
 	}
 }
 
-func TestCaseScopeFormats(t *testing.T) {
-	scope := newScopeWith(t, &seqSource{})
-
-	uuid := scope.UUID()
-	if !regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-8[0-9a-f]{3}-[0-9a-f]{12}$`).MatchString(uuid) {
-		t.Fatalf("invalid uuid: %s", uuid)
+// TestBlockSourceRejectsInvalidBlock 守护"拿到非法区块时拒绝而非吐坏号"：
+// daemon 回了 end≤start 的空/反向区块时，取号必须报错，而不是返回会造成重复/越界的 token。
+//
+// 验证手段：注入一个返回 [5,5)（空区块）的 fetch，断言 Next 返回 error。
+func TestBlockSourceRejectsInvalidBlock(t *testing.T) {
+	src := &blockSource{
+		size: 2,
+		kind: protocol.KindToken,
+		fetch: func(string, int64) (int64, int64, error) {
+			return 5, 5, nil
+		},
 	}
-
-	noDash := scope.UUIDNoDash()
-	if !regexp.MustCompile(`^[0-9a-f]{12}4[0-9a-f]{3}8[0-9a-f]{15}$`).MatchString(noDash) {
-		t.Fatalf("invalid uuid no dash: %s", noDash)
-	}
-
-	email := scope.EmailFrom("user@example.com")
-	if !regexp.MustCompile(`^user\+[0-9A-Za-z]{16}@example\.com$`).MatchString(email) {
-		t.Fatalf("invalid email: %s", email)
-	}
-
-	phone := scope.Phone("US")
-	if !regexp.MustCompile(`^\+1[0-9]{10}$`).MatchString(phone) {
-		t.Fatalf("invalid phone: %s", phone)
-	}
-}
-
-func TestServerRejectsInvalidAllocSize(t *testing.T) {
-	srv := fixtured.New()
-	mux := http.NewServeMux()
-	srv.RegisterRoutes(mux, nil)
-	ts := httptest.NewServer(mux)
-	defer ts.Close()
-
-	body, err := json.Marshal(protocol.AllocReq{Kind: "token", Size: 0})
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp, err := http.Post(ts.URL+protocol.PathAlloc, "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", resp.StatusCode)
-	}
-	var out protocol.ErrorResp
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		t.Fatal(err)
-	}
-	if out.Code != protocol.ErrCodeInvalidSize {
-		t.Fatalf("error code = %q, want %q", out.Code, protocol.ErrCodeInvalidSize)
+	if _, err := src.Next(); err == nil {
+		t.Fatal("expected error on empty token block, got nil")
 	}
 }

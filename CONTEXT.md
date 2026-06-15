@@ -38,7 +38,7 @@ daemon 内嵌的服务端组件。通过 `POST /v1/fixture/alloc` 暴露 L0 bloc
 
 ## UUID（client/fixture 语义）
 
-RFC 4122 v4 合规的唯一标识符。`UUID()` 返回标准带短线格式（36字符），`UUIDNoDash()` 返回紧凑无短线格式（32字符）。两者均通过内部 `UniqueHex(30)` 生成，version nibble 固定为 `4`，variant nibble 固定为 `a`。
+RFC 4122 v4 合规的唯一标识符。`UUID()` 返回标准带短线格式（36字符），`UUIDNoDash()` 返回紧凑无短线格式（32字符）。两者均通过内部 `UniqueHex(30)` 生成，version nibble 固定为 `4`，variant nibble 固定为 `8`。
 
 **注意**：项目侧"与 UUID 等长但无 v4 语义"的标识符（如 meross 设备 ID）不应使用 L2 UUID 方法，直接用 L1 的 `UniqueHex(32)`。
 
