@@ -1,5 +1,6 @@
-// Package fixture_test 是 fixture 模块的组件/集成/e2e 测试：经真实 HTTP、真实 OS 文件锁、
-// 真实容器验证对外契约。纯函数与需 unexported 的白盒单测留在 client/fixture、fixtured 原包。
+// Package fixture_test 是 fixture 模块的组件/集成测试：经真实 HTTP（httptest loopback）与真实 OS 文件锁
+// （含跨进程）验证对外契约。**真实容器 / 真实 re-exec daemon 的 e2e 冒烟在 test/e2e/**（受 build tag e2e 保护）；
+// 纯函数与需 unexported 的白盒单测留在 client/fixture、fixtured 原包。
 package fixture_test
 
 import (
@@ -151,9 +152,11 @@ func TestAllocHTTPRequiresAuth(t *testing.T) {
 	}
 }
 
-// TestClientGeneratesUniqueOverRealHTTP 是生成方向的真实链路 smoke（B1/B3）：
-// 经真实 HTTP（client blockSource → fixtured Allocator）取大量值，证明整条发号链路在真实环境下
-// 跑通且产出唯一、格式合法。这是"每个重要方向 ≥1 真实环境 smoke"原则对生成方向的兑现。
+// TestClientGeneratesUniqueOverRealHTTP 是生成方向的**进程内组件级联测**（B1/B3）：经真实 HTTP（client
+// blockSource → 真 fixtured.Server）打通"取号→permute→编码"整条管线，验证产出唯一、格式合法。
+//
+// 注意定位：这里用 httptest（同进程 loopback）+ 手挂 mux，**不是 e2e**——它绕过了真实跨进程 daemon 与真实
+// withAuth 鉴权。发号方向的**真实环境 smoke**是 test/e2e 的 TestFixtureAllocE2E（经真 re-exec daemon + 真 token）。
 //
 // 验证手段：用 client.New + NewScope 经真 httptest server 连取 5000 个 UUIDNoDash，断言两两互异、
 // 长度恰 32、全为小写 hex。断言用生成时拿到的值自比，不写任何字面量（token 分配跨运行非确定）。

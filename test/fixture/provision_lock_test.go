@@ -186,3 +186,76 @@ func TestEnsureOnceCrossProcessRunsOnce(t *testing.T) {
 		t.Fatalf("apply-log 记了 %d 次执行, want 1（跨进程互斥失效）\n%q", got, data)
 	}
 }
+
+// TestEnsureOnceLockReleasedOnProcessDeath 守护"持锁进程崩溃不形成死锁"这条 crash-safety（C1 配套）：
+// 文件锁是 OS 级（flock / LockFileEx），内核在进程死亡、fd/handle 关闭时**自动释放**——故崩溃不会留下
+// 永久死锁。这是 FileRegistry 选 OS 锁（而非"锁文件存在即占用"）的关键依赖，必须有真实跨进程用例护住。
+//
+// 验证手段：子进程在 EnsureOnce 的 fn 内写一个 marker 后 select{} 永久持锁；父进程等 marker 出现（确认锁
+// 已被子进程持有）后用 Kill 强杀子进程（模拟崩溃）；随后父进程用有界 ctx(15s) 对同一账本 EnsureOnce。
+// 断言：父进程**成功获取并执行**（skipped==false、fn 跑了）——证明锁已随子进程死亡释放。若锁未释放，父进程
+// 会一直抢不到、卡到 ctx 超时报错，用例据此抓住死锁。子进程崩溃在写账本前，故 key 未标记、父进程必然执行。
+func TestEnsureOnceLockReleasedOnProcessDeath(t *testing.T) {
+	// child 分支：持锁后永不退出，等父进程强杀。
+	if ledger := os.Getenv("FIXTURE_CRASH_LEDGER"); ledger != "" {
+		marker := os.Getenv("FIXTURE_CRASH_MARKER")
+		reg := fixture.NewFileRegistry(ledger)
+		_, _ = reg.EnsureOnce(context.Background(), "crash.key", func() error {
+			_ = os.WriteFile(marker, []byte("holding"), 0o644) // 通知父进程：锁已到手
+			select {}                                          // 永久持锁，直到被 Kill
+		})
+		return
+	}
+
+	// parent 分支。
+	dir := t.TempDir()
+	ledger := filepath.Join(dir, protocol.LedgerFileName)
+	marker := filepath.Join(dir, "holding.marker")
+
+	cmd := exec.Command(os.Args[0], "-test.run", "^TestEnsureOnceLockReleasedOnProcessDeath$")
+	cmd.Env = append(os.Environ(),
+		"FIXTURE_CRASH_LEDGER="+ledger,
+		"FIXTURE_CRASH_MARKER="+marker,
+	)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("启动持锁子进程失败: %v", err)
+	}
+	waitForFile(t, marker, 15*time.Second) // 等子进程确实拿到锁
+
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatalf("强杀子进程失败: %v", err)
+	}
+	_, _ = cmd.Process.Wait() // 回收僵尸
+
+	// 子进程已死。父进程应能在有界时间内拿到锁——否则即死锁。
+	reg := fixture.NewFileRegistry(ledger)
+	var ran bool
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	skipped, err := reg.EnsureOnce(ctx, "crash.key", func() error {
+		ran = true
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("崩溃后无法获取锁（疑似死锁）: %v", err)
+	}
+	if skipped {
+		t.Fatal("不应 skip：崩溃进程在写账本前已死，key 未标记")
+	}
+	if !ran {
+		t.Fatal("fn 未执行")
+	}
+}
+
+// waitForFile 轮询等待 path 出现，超时则 fatal。
+func waitForFile(t *testing.T, path string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("等待文件 %s 超时（%s）", path, timeout)
+}
