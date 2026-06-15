@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"math/rand"
 	"net/mail"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -50,12 +49,9 @@ func (s *CaseScope) UniqueInt(digits int) int64 {
 	if digits < 1 || digits > 18 {
 		panic("fixture: UniqueInt digits must be in [1,18]")
 	}
-	// 复用 UniqueString(Digit) 的唯一载荷再解析：digits 位十进制串（可含前导零），值域严格 < 10^18 < 2⁶³。
-	v, err := strconv.ParseInt(s.UniqueString(digits, Digit), 10, 64)
-	if err != nil {
-		panic("fixture: UniqueInt parse failed: " + err.Error())
-	}
-	return v
+	// 直接返回置换后的整数，不经十进制字符串往返：permute 已给出 [0,10^digits) 内的双射值，
+	// 10^digits ≤ 10^18 < 2⁶³，.Int64() 精确。
+	return permute(s.next(), powInt(10, digits)).Int64()
 }
 
 // UUID 返回带短线的 RFC 4122 v4 字符串（36 字符）。
@@ -72,9 +68,18 @@ func (s *CaseScope) UUIDNoDash() string {
 	return payload[:12] + "4" + payload[12:15] + "8" + payload[15:]
 }
 
-// Email 返回语法合法的 fixture 邮箱：fixture+{16位载荷}@mtkit.test。
-func (s *CaseScope) Email() string {
-	return "fixture+" + s.UniqueString(16, AlphaNum) + "@mtkit.test"
+// Email 返回语法合法的 fixture 邮箱：fixture+{16位载荷}@{domain}。
+// domain 省略或为空时用默认 mtkit.test；传入多个 domain 是调用方错误，panic。
+// 需要自定义本地名（而非固定 fixture）的，走 EmailFrom。
+func (s *CaseScope) Email(domain ...string) string {
+	if len(domain) > 1 {
+		panic("fixture: Email takes at most one domain")
+	}
+	d := "mtkit.test"
+	if len(domain) == 1 && domain[0] != "" {
+		d = domain[0]
+	}
+	return "fixture+" + s.UniqueString(16, AlphaNum) + "@" + d
 }
 
 // EmailFrom 在 seed 的 local part 后插入唯一 plus tag：{local}+{16位载荷}@{domain}。

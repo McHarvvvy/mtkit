@@ -32,6 +32,11 @@ L2  塑形         ── 在 L1 载荷上加纯格式：UUID / email / dashed�
 
 ## 1.2 唯一性保证
 
+> **实践规则（TL;DR）**：无需先吃透下文"全局 `G` vs 本形态运行量"的微妙之处，记住一条即可正确使用——
+>
+> - **要跨字段 / 全局唯一**：用 ① 档宽形态——`UUID()` / `UUIDNoDash()` / `UniqueHex(n)`（`n≥16`）/ `UniqueString(n, AlphaNum)`（`n≥11`）。这些无条件唯一，放心跨字段用。
+> - **其余形态不要依赖其跨字段唯一**：含 10 位 uid、`UniqueInt` 等 ② 档"现实安全但非无条件"的形态——可做局部标识，但别把"全局不撞"建立在它们之上。窄串（③ 档，如 6 位码）框架**明确不保证**；让被测程序依赖短串全局唯一本身是调用方设计缺陷，请改用 ① 档形态。
+
 **算法是确定性双射，不是哈希。** `permute(token, cap)` 是 `[0, cap)` 上的一个**排列**，不同输入必映射到不同输出。
 
 对形态 S（值空间 `cap = |cs|^n`），只要喂给 `permute` 的 token 都 `< cap`，S 的产出两两不同。证明：token 构成全局序列的子集 `T_S`，元素两两不同（全局单调）；`permute(·, cap)` 是双射，双射限制到子集仍是单射。∎
@@ -70,6 +75,17 @@ L2  塑形         ── 在 L1 载荷上加纯格式：UUID / email / dashed�
 | AlphaNum (62)      | 11     |
 
 > **注意**：上表的 Digit `n≥19` 指 `UniqueString(n, Digit)` 这类字符串形态。`UniqueInt(digits)` 返回 `int64`，受 `int64` 可表达范围限制，合法 `digits` 为 `1..18`；需要 19 位及以上数字载荷时用 `UniqueString(n, Digit)`。
+
+### 已否决的备选：per-kind 独立序列
+
+曾考虑"按形态（`(cs, n)` / cap）各开一条独立 token 序列"，把别名阈值从"全局 `G` 跨 cap"改为"本形态自身生成量跨 cap"，以缩小窄形态安全边界。**否决，维持单一全局序列**，理由：
+
+- **实际碰撞零增益**：① 档本就无条件唯一；中高 cap 段（`2³³~2⁶³`）一次 `go test` 的 daemon 寿命里全局 `G` 撑死几百万次生成，够不到那些 cap，单一全局今天也基本不撞。它唯一买到的是"按本形态计数即可推理安全"这一**心智简化**——而这用本节文档讲清即可交付，无须实现。
+- **复杂度代价不值**：per-kind 要在 daemon `Allocator` 与进程侧 `blockSource` 两端都引入按 kind 的计数器表（`map[kind]`），换来的只是上述本可由文档交付的收益。
+- **裸多序列另有确定性碰撞陷阱**：`permute(token, cap)` 是固定 key 的纯函数、新序列从 `token=0` 重启 → 同一形态的两条独立序列会产出**逐位相同**的流，跨字段必然相撞（"按 `(cs,n)` 派生、同配置共享一条"可绕开此坑，但既然整体不做，仅作记录）。
+- **窄形态救不动**：补块按固定块大小（65536）发放，`cap` 接近或小于块大小时（③ 档窄串）单块即越过 cap、当场折叠，独立序列也无济于事——正是本节明确不保证的那段。
+
+与 §1.9 中"spike 早期 per-shape kind / budget tripwire 已弃"的记述同源，最终设计统一为**单一全局 kind + 静默全函数**。
 
 ## 1.3 L0 区块发号（HiLo 模式）
 
@@ -175,7 +191,7 @@ func (s *CaseScope) UniqueInt(digits int) int64              // digits ∈ [1,18
 // 第 2 层：塑形
 func (s *CaseScope) UUID() string                            // RFC 4122 v4，带短线（36字符）
 func (s *CaseScope) UUIDNoDash() string                      // RFC 4122 v4，无短线（32字符）
-func (s *CaseScope) Email() string                           // "fixture+{载荷}@mtkit.test"
+func (s *CaseScope) Email(domain ...string) string           // "fixture+{载荷}@{domain}"，domain 省略/空 → mtkit.test
 func (s *CaseScope) EmailFrom(seed string) string            // seed 须为合法 email；输出 {local}+{载荷}@{domain}；非法格式 panic
 func (s *CaseScope) Phone(country string) string             // E.164 语法合法；country 为 ISO 3166-1 alpha-2；初始支持 CN/US/GB/DE/FR/JP/IT/CA；不支持则 panic
 
@@ -200,6 +216,7 @@ func SampleLanguage() string
 
 - `UUID()` 与 `UUIDNoDash()` 各消耗独立 token，产出两个不同标识符，不存在"同一标识符两种格式"语义。内部消耗 `UniqueHex(30)` + 插入固定 version/variant 位（属 ① 档，`2^120 > 2^63`）。
 - **项目自有 32-hex 标识符**（如 meross 设备 ID）若不要求 v4 合规，直接用 `UniqueHex(32)`，不经 UUID 入口。
+- `Email(domain ...string)` 的 `domain` 是便利入口：省略/空用默认 `mtkit.test`，固定 `fixture` 本地名只换域名；需要自定义本地名走 `EmailFrom`（`EmailFrom("fixture@"+domain)` 亦可达到同样效果，故 `domain` 不引入新能力，仅省去调用方拼 seed）。
 - `Phone` 无 `From` 变体：保留可读种子的场景极少；如确需，用 `UniqueString` 在项目层自行拼接。第一版只保证 E.164 语法与国家码正确，不承诺号码符合各国真实可分配号段规则。
 - `Sample*` 随机返回、可重复，不消耗 token。若需"唯一国家码序列"（罕见），用 `UniqueInt` 对 `len(ISOCountryCodes)` 取模索引。
 - 项目自有格式（guid 排布、order_id 方案）在项目层用第 1 层载荷自行塑形，不进 `client/fixture`。
@@ -357,7 +374,7 @@ func (s *CaseScope) UniqueInt(digits int) int64 // digits ∈ [1,18]
 // 第 2 层
 func (s *CaseScope) UUID() string
 func (s *CaseScope) UUIDNoDash() string
-func (s *CaseScope) Email() string
+func (s *CaseScope) Email(domain ...string) string
 func (s *CaseScope) EmailFrom(seed string) string
 func (s *CaseScope) Phone(country string) string
 ```
@@ -512,21 +529,31 @@ func NewFileRegistry(ledgerPath string) *FileRegistry
 
 ## 3.4 PersistEnv
 
+`PersistEnv` 是**进程级连接池**，按 `sutEnvKey` 懒建并缓存连接。它有**两类消费者**：provision 期的 `Resource.Apply`（框架内部，§3.7），以及测试期直接写/读测试数据的测试代码（调用方）。两者**各持一个实例**——不是冗余，而是被生命周期逼出来的：runtime 只有 `Run` 启动后才可读（§2.3），provision 实例在 `Run` 内、`m.Run()` 之前建，测试实例只能在 `m.Run()` 期间 lazy 建。两个窗口错开，跨窗口共享须引入进程全局，违背 §2.3 的无隐式全局原则，故各建各的（多出的一个空闲池可忽略）。
+
 **不改 `RuntimeInfo` 结构，不改 `ContainerRegistration`**——`sutEnvKey` 经 `RuntimeInfo.SUTEnv`（已有字段）传递，无需新增字段。
 
 ```go
-// PersistEnv 提供测试基础设施连接，供 Resource.Apply 使用。
+// PersistEnv 提供测试基础设施连接，供 Resource.Apply 与测试侧数据写入共用。
 // 连接懒初始化，按 sutEnvKey 在进程内缓存复用。
 // sutEnvKey = sut_env map 的 key，如 "MYSQL_DSN"，不是容器名或数据库名。
 //
-// 刻意用**具体 struct 而非 interface**：唯一消费者 Resource.Apply 是真 I/O（对真实
-// testcontainers 跑 DDL），没有可独立单测的纯逻辑，丢掉接口替换缝无实际损失；换来的是
-// 新增后端只需**加方法**，纯增量——不破坏任何调用方，也没有 mock 实现要同步更新。
-type PersistEnv struct { /* sutEnv + 懒连接缓存 */ }
+// 刻意用**具体 struct 而非 interface**：两类消费者（Resource.Apply、测试侧写数据）都是真 I/O，
+// 没有可独立单测的纯逻辑，丢掉接口替换缝无实际损失；换来的是新增后端只需**加方法**，纯增量——
+// 不破坏任何调用方，也没有 mock 实现要同步更新。
+type PersistEnv struct { /* sutEnv + 懒连接缓存（mu 保护，串行化并发首连） */ }
 
-func (e *PersistEnv) MySQL(sutEnvKey string) *sql.DB
+// 单角色后端：一个 key 一个 client，同时服务 DDL 与数据读写。MySQL/TDengine 均走 database/sql。
+func (e *PersistEnv) MySQL(sutEnvKey string) *sql.DB    // 驱动 mysql
+func (e *PersistEnv) TDengine(sutEnvKey string) *sql.DB // 驱动 taosWS（websocket，纯 Go 无 cgo）
 func (e *PersistEnv) Redis(sutEnvKey string) redis.UniversalClient
 func (e *PersistEnv) Mongo(sutEnvKey string) *mongo.Client
+
+// 多角色后端：provision（admin）与数据读写（client）是两套独立 client、两个端点、两个 key，
+// 故拆成两个平铺方法，各取各的 key——不假装聚合成一个入口（见“多角色后端”小节）。
+// admin.Client 是 pulsaradmin/pkg/admin 的接口；连通性不在构造期探测（SDK 无廉价 ping）。
+func (e *PersistEnv) PulsarAdmin(sutEnvKey string) admin.Client    // http://host:8080
+func (e *PersistEnv) PulsarClient(sutEnvKey string) pulsar.Client  // pulsar://host:6650
 ```
 
 `sutEnvKey` 来自 `RuntimeInfo.SUTEnv`（`mtkit.runtime.json` 的 `sut_env` 字段）。多容器、多数据库靠不同 key 区分：
@@ -534,7 +561,10 @@ func (e *PersistEnv) Mongo(sutEnvKey string) *mongo.Client
 ```text
 MYSQL_DSN          →  mysql 容器，mssiot_user 库
 MYSQL_DEVICE_DSN   →  mysql-device 容器，mssiot_device 库
+TDENGINE_DSN       →  tdengine 容器（taosWS：user:pass@ws(host:6041)/db）
 REDIS_ADDR         →  redis 容器
+PULSAR_ADMIN_URL   →  pulsar 容器，admin REST 端点（:8080）
+PULSAR_BROKER_URL  →  pulsar 容器，broker 端点（pulsar://，:6650）
 ```
 
 连接失败（key 不存在、DSN 有误、连接超时）→ `panic`（与 §1.7 基建故障处理一致）。
@@ -542,14 +572,71 @@ REDIS_ADDR         →  redis 容器
 ```go
 // NewPersistEnv 创建进程级连接池；sutEnv 即 RuntimeInfo.SUTEnv。连接懒初始化。
 func NewPersistEnv(sutEnv map[string]string) *PersistEnv
+```
 
-v1 实现范围：
+### 使用契约
+
+框架不写测试侧代码，故下表 B 组靠使用说明约束，框架无法强制。
+
+**A. 框架保证（使用者可依赖）**
+
+| 保证 | 含义 |
+| ---- | ---- |
+| 进程级缓存 | 同一 `PersistEnv` 内，相同 `sutEnvKey` 的连接只建一次，后续命中缓存 |
+| 并发安全 | 懒连接被 `mu` 串行化；返回的 client 自身 goroutine-safe，可被 `t.Parallel()` 用例自由共享 |
+| fail-loud | 连接失败直接 `panic`（§1.7），不返回可处理的 error |
+| 懒连接 | 没用到的后端不建连 |
+
+**B. 使用者必须遵守（框架无法强制）**
+
+| 约束 | 为什么 | 正确做法 |
+| ---- | ---- | ---- |
+| **每进程只建一个 `PersistEnv`** | 建 N 个 = N 份缓存 = N 套池，复用落空——这是复用的唯一前提 | 包级 `sync.Once` 持单例，所有用例/helper 共享 |
+| **lazy 在 `m.Run()` 期间建，不在 `mtkit.Run()` 之前** | runtime 只有 `Run` 启动后才可读（同 `fxClient` 根因，§2.3/§3.7） | `sync.Once` 里 `mtruntime.Read` → `NewPersistEnv(ri.SUTEnv)`，由测试函数/helper 触发 |
+| **不在用例 cleanup 里 Close** | 池是进程级共享物，一个用例关了会拖垮其他并发用例 | 不显式关，进程退出回收 |
+| **裸 `sutEnvKey` 不进测试体** | 裸 key 散落测试现场是反模式，且 key 名是注册方↔消费方的耦合点 | 用共享常量；测试现场只调项目语义 helper（如 `infra.PulsarProducer()`） |
+
+### 多角色后端（以 Pulsar 为例）
+
+判据：**一个后端有 >1 个语义不同的 client 角色时，平铺成多个方法，各取各的 key；单角色后端维持一个方法。** 不为统一而把单角色也包成链式（过度设计），也不把 admin/client 硬塞进一个假聚合入口——它们端点、key、SDK 全不同，无共享上下文。
+
+两个 URL 由**同一个 Pulsar 容器的 `SUTEnv` 回调（启动后执行）一并吐出两个 key**：mapped port 启动前不可知，故在启动后回调里组装。
+
+```go
+// 注册代码（调用方）。keyPulsarAdmin / keyPulsarBroker 是注册方与 helper 共享的常量，
+// 不在两处各写字面量——否则一边改名、另一边运行时才 panic 暴露。
+container.ContainerRegistration{
+    Name:  "pulsar",
+    Start: startPulsar,
+    SUTEnv: func(ctx context.Context, c testcontainers.Container) (map[string]string, error) {
+        host, err := c.Host(ctx);                     if err != nil { return nil, err }
+        admin, err := c.MappedPort(ctx, "8080/tcp");  if err != nil { return nil, err }
+        broker, err := c.MappedPort(ctx, "6650/tcp"); if err != nil { return nil, err }
+        return map[string]string{
+            keyPulsarAdmin:  fmt.Sprintf("http://%s:%s", host, admin.Port()),
+            keyPulsarBroker: fmt.Sprintf("pulsar://%s:%s", host, broker.Port()),
+        }, nil
+    },
+}
+
+// 项目 helper（调用方）：裸 key 只活在这里和上面的注册回调，测试现场只见语义名。
+func PulsarAdmin()    *pulsaradmin.Client { return env().PulsarAdmin(keyPulsarAdmin) }
+func PulsarProducer() pulsar.Client       { return env().PulsarClient(keyPulsarBroker) }
+```
+
+**一致性契约**：两个 key 是 `SUTEnv` map 里相互独立的两条，框架无法保证它们指向同一个 Pulsar——这份一致性与任何单个 DSN 是否写对一样，是**注册代码作者的责任**；缺失/写错则首次用到时由懒连接 fail-loud `panic`。
+
+### v1 实现范围
 
 - MySQL：`database/sql` + `github.com/go-sql-driver/mysql`，返回 `*sql.DB`，DSN 直接取 `RuntimeInfo.SUTEnv[sutEnvKey]`。
 - Redis：`github.com/redis/go-redis/v9`，返回 `redis.UniversalClient`；`mssiot_user` 同时遗留 `github.com/go-redis/redis/v8`，但 mtkit v1 统一使用 v9，除非后续出现必须兼容 v8 的资源声明。
 - Mongo：`go.mongodb.org/mongo-driver/mongo`，返回 `*mongo.Client`，URI 直接取 `RuntimeInfo.SUTEnv[sutEnvKey]`。
 - `RedisNS` 是文档性资源，`Apply` 为 no-op。
-```
+
+已实现后端（与三大件最常并用）：
+
+- Pulsar（`github.com/apache/pulsar-client-go` v0.19.0）：`PulsarAdmin`（`pulsaradmin/pkg/admin`，建 tenant/namespace/topic）+ `PulsarClient`（`pulsar`，produce/consume 测试数据），双 key 见上。两者构造期不探连通性（SDK 无廉价 ping），broker/admin 不可达到首次调用才暴露。
+- TDengine（`github.com/taosdata/driver-go/v3` v3.8.0）：**websocket 驱动 `taosWS`**（纯 Go、无 cgo，testcontainers + Windows/CI 友好），挂 `database/sql` 返回 `*sql.DB`，与 MySQL 同形；provision 建 database/STable 走 DDL。DSN 形如 `user:pass@ws(host:port)/db`。
 
 ## 3.5 Resource 工厂
 
