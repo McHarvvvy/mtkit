@@ -11,7 +11,7 @@ require (
 	github.com/docker/go-connections v0.5.0
 	github.com/go-sql-driver/mysql v1.5.0
 	github.com/redis/go-redis/v9 v9.6.0
-	github.com/taosdata/driver-go/v3 v3.8.0
+	github.com/taosdata/driver-go/v3 v3.5.5
 	github.com/testcontainers/testcontainers-go v0.35.0
 	go.mongodb.org/mongo-driver v1.11.4
 	golang.org/x/sys v0.38.0

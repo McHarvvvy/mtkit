@@ -106,6 +106,8 @@ func newManager(t *testing.T, cfg mtsut.Config, boot mtsut.SUTBootPlan) *mtsut.M
 
 // ─── SM-01 稳定就绪 ─────────────────────────────────────────────────────────
 
+// TestSM01_StableReady 守护 F1：常驻 SUT 启动后进入"就绪"并暴露有效 PID。
+// 验证手段：用 stable helper 起 Manager，EnsureStarted 后断言 Snapshot().Ready 为真且 PID>0（真子进程）。
 func TestSM01_StableReady(t *testing.T) {
 	mgr := newManager(t, baseCfg(), bootPlan{binary: helperBin, knobs: map[string]string{"SUTHELPER_MODE": "stable"}})
 	if err := mgr.EnsureStarted(context.Background()); err != nil {
@@ -122,6 +124,9 @@ func TestSM01_StableReady(t *testing.T) {
 
 // ─── SM-02 TCP 探活门控 ─────────────────────────────────────────────────────
 
+// TestSM02_TCPProbeGating 守护 F1 的"探活门控"：EnsureStarted 返回意味着探测地址真的可连，而非进程一起来就返回。
+// 验证手段：helper 延迟 300ms 才监听探测端口；EnsureStarted 返回后立刻 net.Dial 该端口，断言可连——
+// 证明就绪判定真的等到了端口通，而不是"进程已 fork 即算就绪"。
 func TestSM02_TCPProbeGating(t *testing.T) {
 	addr := freePort(t)
 	boot := bootPlan{
@@ -143,6 +148,8 @@ func TestSM02_TCPProbeGating(t *testing.T) {
 
 // ─── SM-03 启动失败 ─────────────────────────────────────────────────────────
 
+// TestSM03_StartFailure 守护 F1 失败语义：SUT 起不来时 EnsureStarted 报错且状态不就绪。
+// 验证手段：helper 立即以退出码 1 退出；断言 EnsureStarted 返回 error、Snapshot 不 Ready 且 LastError 非空。
 func TestSM03_StartFailure(t *testing.T) {
 	boot := bootPlan{binary: helperBin, knobs: map[string]string{"SUTHELPER_MODE": "exit", "SUTHELPER_EXIT_CODE": "1"}}
 	mgr := newManager(t, baseCfg(), boot)
@@ -161,6 +168,9 @@ func TestSM03_StartFailure(t *testing.T) {
 
 // ─── SM-04 注入 env 到达进程 ────────────────────────────────────────────────
 
+// TestSM04_InjectedEnvReachesProcess 守护 F6：注入的 env 真的到达 SUT 子进程（即 daemon prepareSUTEnv→SetInjectEnv 路径）。
+// 验证手段：SetInjectEnv 后启动 writeenv helper，它读指定 key 并写入文件；轮询该文件断言内容 == 注入值——
+// 端到端证明注入值穿过 MergedEnv 落进了真子进程环境，而非只停在 Manager 内部。
 func TestSM04_InjectedEnvReachesProcess(t *testing.T) {
 	outFile := filepath.Join(t.TempDir(), "env-out.txt")
 	boot := bootPlan{
@@ -184,6 +194,8 @@ func TestSM04_InjectedEnvReachesProcess(t *testing.T) {
 
 // ─── SM-05 复用幂等 ─────────────────────────────────────────────────────────
 
+// TestSM05_ReuseIdempotent 守护 F4：已就绪的 SUT 再 EnsureStarted 复用同一进程，不重起。
+// 验证手段：连续两次 EnsureStarted，断言两次 Snapshot().PID 相同（防"daemon 每次 acquire 都重起 SUT"退化）。
 func TestSM05_ReuseIdempotent(t *testing.T) {
 	mgr := newManager(t, baseCfg(), bootPlan{binary: helperBin, knobs: map[string]string{"SUTHELPER_MODE": "stable"}})
 	ctx := context.Background()
@@ -202,6 +214,9 @@ func TestSM05_ReuseIdempotent(t *testing.T) {
 
 // ─── SM-06 优雅停止 ─────────────────────────────────────────────────────────
 
+// TestSM06_GracefulStop 守护 F5：Stop 在宽限期内让进程退出，且走的是**优雅信号**而非 fallback 强杀。
+// 验证手段：Stop（带超时 ctx + goroutine 包裹，防挂死时卡到全局超时）后断言 PID 不再存活；并断言 helper 收到
+// SIGTERM/CTRL_BREAK 后写出的 marker=="graceful"——强杀路径不会留下 marker，故 marker 证明优雅停止真生效。
 func TestSM06_GracefulStop(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "stop-marker.txt")
 	mgr := newManager(t, baseCfg(), bootPlan{
@@ -240,6 +255,8 @@ func TestSM06_GracefulStop(t *testing.T) {
 
 // ─── SM-07 源码构建启动 ─────────────────────────────────────────────────────
 
+// TestSM07_BuildFromSource 守护"源码构建启动"这条真实路径：仅给 SourceDir（无预置二进制），框架 go build 出二进制并运行。
+// 验证手段：清空 BinaryPath、设 SourceDir，EnsureStarted 后断言 helper 写出注入标记文件——证明构建产物真被启动且能跑。
 func TestSM07_BuildFromSource(t *testing.T) {
 	outFile := filepath.Join(t.TempDir(), "built-marker.txt")
 	cfg := baseCfg()

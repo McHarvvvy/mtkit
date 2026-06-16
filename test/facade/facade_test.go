@@ -36,6 +36,8 @@ func (r *recordingRunnable) Run() int { r.ran = true; return 0 }
 
 // ─── FC-01 runtime_dir 必填 ────────────────────────────────────────────────
 
+// TestFC01_RuntimeDirRequired 守护 F2：runtime_dir 是 daemon 发现文件与账本的落点根目录，必填。
+// 验证手段：以空 RuntimeDir 调 New，断言在 New 校验阶段就返回 error（尚未进入 orchestrator/起 daemon）。
 func TestFC01_RuntimeDirRequired(t *testing.T) {
 	_, err := mtkit.New("proj", &mtkit.Config{RuntimeDir: ""})
 	if err == nil {
@@ -45,6 +47,8 @@ func TestFC01_RuntimeDirRequired(t *testing.T) {
 
 // ─── FC-02 faked CA 成对 ───────────────────────────────────────────────────
 
+// TestFC02_FakedCAMustBePaired 守护 F2：静态 CA 的 cert 与 key 必须成对提供（半填是配置错误）。
+// 验证手段：四种组合过 New——都空（动态 CA）、都填（静态 CA）应通过；只填 cert / 只填 key 应报错。
 func TestFC02_FakedCAMustBePaired(t *testing.T) {
 	dir := t.TempDir()
 	tests := []struct {
@@ -80,6 +84,9 @@ func TestFC02_FakedCAMustBePaired(t *testing.T) {
 
 // ─── FC-03 SUT 启用需产物源 ─────────────────────────────────────────────────
 
+// TestFC03_SUTEnabledRequiresBinaryOrSource 守护 F2：启用 SUT 必须给出产物来源（预置 binary 或源码 dir），
+// 否则框架无从启动被测程序。
+// 验证手段：SUT.Enabled 下分别给 空 / binary_path / source_dir 过 New，断言空报错、任一非空通过。
 func TestFC03_SUTEnabledRequiresBinaryOrSource(t *testing.T) {
 	dir := t.TempDir()
 
@@ -112,6 +119,8 @@ func TestFC03_SUTEnabledRequiresBinaryOrSource(t *testing.T) {
 
 // ─── FC-04 RuntimeFile 解析 ─────────────────────────────────────────────────
 
+// TestFC04_RuntimeFileResolution 守护 F2：runtime_file 三种写法解析到正确的对外路径（RuntimePath 是发布产物）。
+// 验证手段：空 / 纯文件名 / 绝对路径 分别过 New，断言 RuntimePath() = 默认名落 dir / 该文件名落 dir / 绝对路径原样。
 func TestFC04_RuntimeFileResolution(t *testing.T) {
 	dir := t.TempDir()
 	abs := filepath.Join(t.TempDir(), "explicit.runtime.json")
@@ -139,6 +148,8 @@ func TestFC04_RuntimeFileResolution(t *testing.T) {
 
 // ─── FC-05 project 缺省 ─────────────────────────────────────────────────────
 
+// TestFC05_ProjectRequired 守护 F2：project 必填（非空白）——它是 daemon 复用与隔离的命名空间键。
+// 验证手段：空白 project 过 New 应报错；非空通过。
 func TestFC05_ProjectRequired(t *testing.T) {
 	dir := t.TempDir()
 
@@ -157,6 +168,9 @@ func TestFC05_ProjectRequired(t *testing.T) {
 
 // ─── FC-06 容器注册校验（单一真相 container.ValidateRegistrations）──────────────
 
+// TestFC06_ValidateRegistrations 守护 F2 容器注册校验，直接打单一真相 container.ValidateRegistrations
+// （门面 Run 与此处共用它，故在此集中验证规则本身，避免规则被绕过或漂移）。
+// 验证手段：空列表 / 空名 / nil Start / 重名 / 合法 五种输入，断言前四报错、合法通过。
 func TestFC06_ValidateRegistrations(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -192,6 +206,9 @@ func TestFC06_ValidateRegistrations(t *testing.T) {
 
 // ─── FC-07 Run 装配守卫（触发早返回，m 不应运行）─────────────────────────────
 
+// TestFC07_RunGuards 守护 F1/F2 的"非法装配不交付环境"：装配守卫触发 Run 早返回 1，且绝不调用 m.Run()。
+// 验证手段：未注册容器 / 注册非法（重名）/ SUT 启用却未 RegisterSUT 三种，断言 Run 返回 1 且 recordingRunnable.ran
+// 为 false——即守卫在进入编排前拦截，被测程序不会在环境未就绪时被跑起来（断言行为，不咬具体哪条守卫命中）。
 func TestFC07_RunGuards(t *testing.T) {
 	dir := t.TempDir()
 

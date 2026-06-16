@@ -5,6 +5,7 @@ package e2e
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -12,7 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/apache/pulsar-client-go/pulsar"
 	mysqldriver "github.com/go-sql-driver/mysql"
+	"go.mongodb.org/mongo-driver/bson"
 
 	"github.com/docker/go-connections/nat"
 	"github.com/testcontainers/testcontainers-go"
@@ -68,7 +71,7 @@ func mappedHostPort(t *testing.T, c testcontainers.Container, port string) strin
 func TestPersistEnvRedisConnectsAndReuses(t *testing.T) {
 	requireDocker(t)
 	c := startContainer(t, testcontainers.ContainerRequest{
-		Image:        "redis:7-alpine",
+		Image:        "redis:8.2.3",
 		ExposedPorts: []string{"6379/tcp"},
 		WaitingFor:   wait.ForListeningPort("6379/tcp"),
 	})
@@ -99,7 +102,7 @@ func TestProvisionMySQLTableCreatesTable(t *testing.T) {
 	requireDocker(t)
 	const dbName = "mtkit_test"
 	c := startContainer(t, testcontainers.ContainerRequest{
-		Image:        "mysql:8.0",
+		Image:        "mysql:8.0.42",
 		ExposedPorts: []string{"3306/tcp"},
 		Env: map[string]string{
 			"MYSQL_ROOT_PASSWORD": "secret",
@@ -140,6 +143,151 @@ func TestProvisionMySQLTableCreatesTable(t *testing.T) {
 	}
 }
 
+// TestPersistEnvMongoConnectsWritesAndReuses 守护 Mongo 的 PersistEnv 真实连接能力：
+// Ping 成功后复用同一 *mongo.Client，并对真实 MongoDB 做一次 insert/find 反向读。
+func TestPersistEnvMongoConnectsWritesAndReuses(t *testing.T) {
+	requireDocker(t)
+	c := startContainer(t, testcontainers.ContainerRequest{
+		Image:        "mongo:5.0.20",
+		ExposedPorts: []string{"27017/tcp"},
+		WaitingFor:   wait.ForListeningPort("27017/tcp").WithStartupTimeout(90 * time.Second),
+	})
+	addr := mappedHostPort(t, c, "27017/tcp")
+
+	const key = "MONGO_URI"
+	uri := "mongodb://" + addr + "/?directConnection=true"
+	env := fixture.NewPersistEnv(map[string]string{key: uri})
+
+	m1 := env.Mongo(key)
+	m2 := env.Mongo(key)
+	if m1 != m2 {
+		t.Fatal("同一 key 两次取到不同的 Mongo 客户端（复用失效）")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	coll := m1.Database("mtkit_e2e").Collection("persist_env")
+	if _, err := coll.InsertOne(ctx, bson.M{"_id": "mongo-smoke", "value": 42}); err != nil {
+		t.Fatalf("Mongo insert 失败: %v", err)
+	}
+	var got struct {
+		Value int `bson:"value"`
+	}
+	if err := coll.FindOne(ctx, bson.M{"_id": "mongo-smoke"}).Decode(&got); err != nil {
+		t.Fatalf("Mongo find 失败: %v", err)
+	}
+	if got.Value != 42 {
+		t.Fatalf("Mongo 反向读值错误: got %d, want 42", got.Value)
+	}
+
+	assertPanics(t, "取未注册的 Mongo key 应 fail-loud panic", func() {
+		env.Mongo("MONGO_MISSING")
+	})
+}
+
+// TestPersistEnvPulsarProducesAndConsumes 守护 Pulsar 双端点 PersistEnv：
+// Admin REST 真实可达，Broker client 能真实 subscribe/produce/receive，且同 key client 复用。
+func TestPersistEnvPulsarProducesAndConsumes(t *testing.T) {
+	requireDocker(t)
+	c := startContainer(t, testcontainers.ContainerRequest{
+		Image:        "apachepulsar/pulsar:3.0.2",
+		ExposedPorts: []string{"6650/tcp", "8080/tcp"},
+		Cmd:          []string{"bin/pulsar", "standalone", "-nfw"},
+		Env: map[string]string{
+			"PULSAR_MEM": "-Xms256m -Xmx256m -XX:MaxDirectMemorySize=128m",
+		},
+		WaitingFor: wait.ForListeningPort("8080/tcp").WithStartupTimeout(240 * time.Second),
+	})
+	brokerAddr := mappedHostPort(t, c, "6650/tcp")
+	adminAddr := mappedHostPort(t, c, "8080/tcp")
+
+	const brokerKey = "PULSAR_BROKER_URL"
+	const adminKey = "PULSAR_ADMIN_URL"
+	env := fixture.NewPersistEnv(map[string]string{
+		brokerKey: "pulsar://" + brokerAddr,
+		adminKey:  "http://" + adminAddr,
+	})
+	waitPulsarAdminReady(t, env, adminKey, 90*time.Second)
+
+	client1 := env.PulsarClient(brokerKey)
+	client2 := env.PulsarClient(brokerKey)
+	if client1 != client2 {
+		t.Fatal("同一 key 两次取到不同的 Pulsar client（复用失效）")
+	}
+
+	topic := "persistent://public/default/" + uniqueName("mtkit-e2e-pulsar")
+	consumer := subscribePulsar(t, client1, topic, uniqueName("mtkit-e2e-sub"), 90*time.Second)
+	defer consumer.Close()
+
+	producer := createPulsarProducer(t, client1, topic, 90*time.Second)
+	defer producer.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	payload := []byte("mtkit-pulsar-smoke")
+	if _, err := producer.Send(ctx, &pulsar.ProducerMessage{Payload: payload}); err != nil {
+		t.Fatalf("Pulsar send 失败: %v", err)
+	}
+	msg, err := consumer.Receive(ctx)
+	if err != nil {
+		t.Fatalf("Pulsar receive 失败: %v", err)
+	}
+	defer consumer.Ack(msg)
+	if string(msg.Payload()) != string(payload) {
+		t.Fatalf("Pulsar 收到 payload 错误: got %q, want %q", msg.Payload(), payload)
+	}
+
+	assertPanics(t, "取未注册的 Pulsar broker key 应 fail-loud panic", func() {
+		env.PulsarClient("PULSAR_MISSING")
+	})
+}
+
+// TestPersistEnvTDengineExecutesDDLAndQuery 守护 TDengine websocket driver：
+// PersistEnv.TDengine 能 Ping、复用同一 *sql.DB，并对真实 TDengine 跑 DDL/insert/query。
+func TestPersistEnvTDengineExecutesDDLAndQuery(t *testing.T) {
+	requireDocker(t)
+	c := startContainer(t, testcontainers.ContainerRequest{
+		Image:        "tdengine/tdengine:3.3.0.0",
+		ExposedPorts: []string{"6041/tcp"},
+		WaitingFor:   wait.ForListeningPort("6041/tcp").WithStartupTimeout(180 * time.Second),
+	})
+	addr := mappedHostPort(t, c, "6041/tcp")
+
+	const key = "TDENGINE_DSN"
+	dsn := "root:taosdata@ws(" + addr + ")/"
+	waitTDengineReady(t, dsn, 90*time.Second)
+
+	env := fixture.NewPersistEnv(map[string]string{key: dsn})
+	db1 := env.TDengine(key)
+	db2 := env.TDengine(key)
+	if db1 != db2 {
+		t.Fatal("同一 key 两次取到不同的 TDengine DB（复用失效）")
+	}
+
+	ctx := context.Background()
+	dbName := fmt.Sprintf("mtkit_e2e_%d", time.Now().UnixNano())
+	if _, err := db1.ExecContext(ctx, "CREATE DATABASE IF NOT EXISTS "+dbName); err != nil {
+		t.Fatalf("TDengine create database 失败: %v", err)
+	}
+	if _, err := db1.ExecContext(ctx, "CREATE TABLE IF NOT EXISTS "+dbName+".readings (ts TIMESTAMP, reading_value INT)"); err != nil {
+		t.Fatalf("TDengine create table 失败: %v", err)
+	}
+	if _, err := db1.ExecContext(ctx, "INSERT INTO "+dbName+".readings VALUES (NOW, 42)"); err != nil {
+		t.Fatalf("TDengine insert 失败: %v", err)
+	}
+	var got int
+	if err := db1.QueryRowContext(ctx, "SELECT reading_value FROM "+dbName+".readings LIMIT 1").Scan(&got); err != nil {
+		t.Fatalf("TDengine query 失败: %v", err)
+	}
+	if got != 42 {
+		t.Fatalf("TDengine 反向读值错误: got %d, want 42", got)
+	}
+
+	assertPanics(t, "取未注册的 TDengine key 应 fail-loud panic", func() {
+		env.TDengine("TDENGINE_MISSING")
+	})
+}
+
 // waitMySQLReady 反复 Ping 直到 MySQL 正式 server 真正可连或超时——吸收初始化期的 bootstrap→正式 重启窗口。
 // mysql 驱动由 client/fixture 的 blank import 全局注册，故这里 database/sql 可直接用 "mysql"。
 func waitMySQLReady(t *testing.T, dsn string, timeout time.Duration) {
@@ -165,6 +313,85 @@ func waitMySQLReady(t *testing.T, dsn string, timeout time.Duration) {
 		time.Sleep(500 * time.Millisecond)
 	}
 	t.Fatalf("MySQL 在 %s 内未就绪: %v", timeout, lastErr)
+}
+
+func waitTDengineReady(t *testing.T, dsn string, timeout time.Duration) {
+	t.Helper()
+	db, err := sql.Open("taosWS", dsn)
+	if err != nil {
+		t.Fatalf("open tdengine: %v", err)
+	}
+	defer db.Close()
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		lastErr = db.PingContext(ctx)
+		cancel()
+		if lastErr == nil {
+			return
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	t.Fatalf("TDengine 在 %s 内未就绪: %v", timeout, lastErr)
+}
+
+func waitPulsarAdminReady(t *testing.T, env *fixture.PersistEnv, adminKey string, timeout time.Duration) {
+	t.Helper()
+	admin := env.PulsarAdmin(adminKey)
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		namespaces, err := admin.Namespaces().GetNamespaces("public")
+		if err == nil {
+			for _, ns := range namespaces {
+				if ns == "public/default" {
+					return
+				}
+			}
+			lastErr = fmt.Errorf("public/default namespace not found: %v", namespaces)
+		} else {
+			lastErr = err
+		}
+		time.Sleep(time.Second)
+	}
+	t.Fatalf("Pulsar admin 在 %s 内未就绪: %v", timeout, lastErr)
+}
+
+func subscribePulsar(t *testing.T, client pulsar.Client, topic, subscription string, timeout time.Duration) pulsar.Consumer {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		consumer, err := client.Subscribe(pulsar.ConsumerOptions{
+			Topic:            topic,
+			SubscriptionName: subscription,
+			Type:             pulsar.Exclusive,
+		})
+		if err == nil {
+			return consumer
+		}
+		lastErr = err
+		time.Sleep(time.Second)
+	}
+	t.Fatalf("Pulsar subscribe 在 %s 内未成功: %v", timeout, lastErr)
+	return nil
+}
+
+func createPulsarProducer(t *testing.T, client pulsar.Client, topic string, timeout time.Duration) pulsar.Producer {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		producer, err := client.CreateProducer(pulsar.ProducerOptions{Topic: topic})
+		if err == nil {
+			return producer
+		}
+		lastErr = err
+		time.Sleep(time.Second)
+	}
+	t.Fatalf("Pulsar producer 在 %s 内未成功: %v", timeout, lastErr)
+	return nil
 }
 
 // assertPanics 断言 fn 会 panic，否则用 msg 报错。

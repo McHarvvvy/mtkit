@@ -9,6 +9,9 @@ import (
 	"github.com/McHarvvvy/mtkit/fixtured/protocol"
 )
 
+// TestInitFileLedgerResetsAppliedKeys 守护账本重置契约（C5）：daemon 启动调 InitFileLedger 会清空上一代残留的 applied 列表。
+// 验证逻辑：预置一个非空账本（模拟上一代 daemon 残留），调 InitFileLedger 后读回，断言 applied 为空——
+// 保证新容器（空数据）配空账本，client 不会误判某 key 已 applied 而跳过建表（正是账本机制要消灭的状态）。
 func TestInitFileLedgerResetsAppliedKeys(t *testing.T) {
 	path := filepath.Join(t.TempDir(), protocol.LedgerFileName)
 	// 预置一个非空账本，模拟上一代 daemon 的残留。
