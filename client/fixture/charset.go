@@ -5,11 +5,16 @@ package fixture
 type Charset int
 
 const (
-	AlphaNum Charset = iota // 62：数字 + 大小写字母
-	Lower                   // 26：小写字母
-	Upper                   // 26：大写字母
-	Hex                     // 16：小写十六进制
-	Digit                   // 10：十进制数字
+	// AlphaNum 是 62 进制字母表：数字 + 大小写字母。
+	AlphaNum Charset = iota
+	// Lower 是 26 进制字母表：小写字母。
+	Lower
+	// Upper 是 26 进制字母表：大写字母。
+	Upper
+	// Hex 是 16 进制字母表：小写十六进制。
+	Hex
+	// Digit 是 10 进制字母表：十进制数字。
+	Digit
 )
 
 // alphabet 返回 cs 对应的符号集；未定义的 charset 是程序员错误，直接 panic。

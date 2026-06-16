@@ -6,10 +6,13 @@ import (
 	"strings"
 )
 
+// baseDirName 是 mtkit 默认产物根目录名；home 与 temp 两处共用此常量，避免命名漂移。
+const baseDirName = ".mtkit"
+
 // DefaultRuntimePath 返回按 project 隔离的 runtime 文件路径。
 func DefaultRuntimePath(project string) string {
 	project = sanitizeProject(project)
-	return filepath.Join(os.TempDir(), "mt", project, "mtkit.runtime.json")
+	return filepath.Join(os.TempDir(), baseDirName, project, DefaultRuntimeFileName)
 }
 
 // DefaultConfigPath 返回 mtkit 默认配置文件路径。
@@ -17,13 +20,16 @@ func DefaultConfigPath(project string) string {
 	project = sanitizeProject(project)
 	home, err := os.UserHomeDir()
 	if err != nil || strings.TrimSpace(home) == "" {
-		return filepath.Join(os.TempDir(), "mt", project, "mtkit.config.json")
+		return filepath.Join(os.TempDir(), baseDirName, project, DefaultConfigFileName)
 	}
-	return filepath.Join(home, ".mtkit", project, "mtkit.config.json")
+	return filepath.Join(home, baseDirName, project, DefaultConfigFileName)
 }
 
 // DefaultRuntimeFileName 是 runtime 文件的默认文件名（runtime_file 未配置时使用）。
 const DefaultRuntimeFileName = "mtkit.runtime.json"
+
+// DefaultConfigFileName 是 mtkit 配置文件的默认文件名。
+const DefaultConfigFileName = "mtkit.config.json"
 
 // ResolveRuntimeFile 把配置的 runtime_file 解析为最终路径：
 //   - file 为空 → <runtimeDir>/mtkit.runtime.json（默认）
@@ -59,7 +65,6 @@ func AppLogPath(runtimePath string) string {
 func DaemonLogPath(runtimePath string) string {
 	return filepath.Join(ArtifactDir(runtimePath), "daemon.log")
 }
-
 
 // RunnerDir 返回 daemon runner 目录。
 func RunnerDir(runtimePath string) string {

@@ -99,35 +99,43 @@ func buildKitFromEnv() (*mtkit.MTKit, error) {
 	kit.RegisterContainers(func(context.Context) ([]container.ContainerRegistration, error) {
 		return registerContainers(kind, name), nil
 	})
+	if os.Getenv("E2E_SCHEMA") == "1" {
+		kit.WithSchema(persistSchemaResources())
+	}
 	if sutEnabled {
 		kit.RegisterSUT(e2eBootPlan{controlAddr: os.Getenv("E2E_SUT_CONTROL_ADDR")})
 	}
 	return kit, nil
 }
 
-// registerContainers 据 kind 返回容器注册：redis=真 Docker redis（带 REDIS_ADDR 注入）；其余=noop。
+// registerContainers 据 kind 返回容器注册：redis=真 Docker redis（带 REDIS_ADDR 注入）；
+// persist=PersistEnv 全后端冒烟用的五类容器（见 fixture_persist_env_e2e_test.go）；其余=noop。
 func registerContainers(kind, name string) []container.ContainerRegistration {
-	if kind != "redis" {
+	switch kind {
+	case "persist":
+		return registerPersistContainers(name)
+	case "redis":
+		return []container.ContainerRegistration{
+			{
+				Name:  name,
+				Start: startRedis(name),
+				SUTEnv: func(ctx context.Context, c testcontainers.Container) (map[string]string, error) {
+					host, err := c.Host(ctx)
+					if err != nil {
+						return nil, err
+					}
+					port, err := c.MappedPort(ctx, "6379/tcp")
+					if err != nil {
+						return nil, err
+					}
+					return map[string]string{"REDIS_ADDR": net.JoinHostPort(host, port.Port())}, nil
+				},
+			},
+		}
+	default:
 		return []container.ContainerRegistration{
 			{Name: name, Start: func(context.Context) (testcontainers.Container, error) { return nil, nil }},
 		}
-	}
-	return []container.ContainerRegistration{
-		{
-			Name:  name,
-			Start: startRedis(name),
-			SUTEnv: func(ctx context.Context, c testcontainers.Container) (map[string]string, error) {
-				host, err := c.Host(ctx)
-				if err != nil {
-					return nil, err
-				}
-				port, err := c.MappedPort(ctx, "6379/tcp")
-				if err != nil {
-					return nil, err
-				}
-				return map[string]string{"REDIS_ADDR": net.JoinHostPort(host, port.Port())}, nil
-			},
-		},
 	}
 }
 
@@ -174,6 +182,7 @@ type envOpts struct {
 	containerName  string
 	sut            bool
 	faked          bool
+	schema         bool
 	sutControlAddr string
 	idleTTLSec     int
 }
@@ -195,6 +204,9 @@ func setupEnv(t *testing.T, o envOpts) {
 	}
 	if o.faked {
 		set("E2E_FAKED", "1")
+	}
+	if o.schema {
+		set("E2E_SCHEMA", "1")
 	}
 	// 兜底：测试结束确保该 runtime 目录的 daemon 被终止，避免 lingering daemon。
 	t.Cleanup(func() { killDaemon(o.runtimeDir) })

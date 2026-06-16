@@ -19,6 +19,8 @@ type LifecycleConfig struct {
 	GracePeriodSeconds  int `json:"grace_period_seconds"`
 }
 
+// ProcessConfig 是被框架托管的子进程（如 SUT）的通用配置：产物来源（二进制或源码）、
+// 编译参数与生命周期超时；只承载 JSON 可表达的秒数，运行期 Duration 由门面派生。
 type ProcessConfig struct {
 	Enabled    bool            `json:"enabled"`
 	BinaryPath string          `json:"binary_path"`
@@ -27,6 +29,7 @@ type ProcessConfig struct {
 	Lifecycle  LifecycleConfig `json:"lifecycle"`
 }
 
+// SUTConfig 是被测服务（SUT）的进程配置：在 ProcessConfig 之上增加 SUT 独立的空闲回收时长。
 type SUTConfig struct {
 	ProcessConfig
 	IdleTTLSeconds int `json:"idle_ttl_seconds"`
@@ -42,6 +45,8 @@ type FakedConfig struct {
 	HTTP    FakedHTTPConfig `json:"http"`
 }
 
+// FakedHTTPConfig 是 faked HTTP 侧配置：MITM 代理监听地址与静态 CA（cert/key 成对，
+// 留空则启动时动态生成 CA）。
 type FakedHTTPConfig struct {
 	ProxyListen string `json:"proxy_listen"`
 	CACertFile  string `json:"ca_cert_file"`
