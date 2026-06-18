@@ -192,7 +192,10 @@ func TestE2E3_Reuse(t *testing.T) {
 	})
 }
 
-// TestE2E4_IdleCleanup 验证 idle 自动退出 + 真容器/runtime 清理、无孤儿（F5）。
+// TestE2E4_IdleCleanup 验证 idle 自动退出 + 真容器清理、无孤儿（F5）。
+//
+// 注意：runtime 文件刻意不在退出时删除（保留供查阅，下次启动探活后清理重写），故此处只验
+// 真实资源（容器 / daemon 进程）被回收，不再要求 runtime 文件消失。
 func TestE2E4_IdleCleanup(t *testing.T) {
 	requireDocker(t)
 	name := uniqueName("e2e-idle")
@@ -208,13 +211,12 @@ func TestE2E4_IdleCleanup(t *testing.T) {
 
 	deadline := time.Now().Add(25 * time.Second)
 	for time.Now().Before(deadline) {
-		_, statErr := os.Stat(runtimeFile(dir))
-		if os.IsNotExist(statErr) && !containerExists(name) && !processAlive(pid) {
+		if !containerExists(name) && !processAlive(pid) {
 			return
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	t.Fatal("idle 清理超时：runtime 文件 / 容器 / daemon 进程之一仍在")
+	t.Fatal("idle 清理超时：容器 / daemon 进程之一仍在")
 }
 
 // ─── 用例内工具 ─────────────────────────────────────────────────────────────

@@ -164,7 +164,7 @@ gRPC response 以 `proto.Marshal` + base64 编码传输；HTTP response 的 body
 
 ### 5.1 调用日志
 
-两侧引擎都把命中/未命中事件写 **JSONL**（`grpc_calls.jsonl` / `http_calls.jsonl`，落 `<runtime_dir>/faked/`）。每条含 endpoint、method、route_key、`matched`、`action_kind`、（HTTP 还有 `status`）、未命中时的 `error`。这是「SUT 到底调没调、调了什么」的可观察证据。
+两侧引擎都把命中/未命中事件写 **JSONL**（`grpc_calls.jsonl` / `http_calls.jsonl`，落 `<runtime_dir>/logs/`，与 daemon.log / app.log 同处）。每条含 endpoint、method、route_key、`matched`、`action_kind`、（HTTP 还有 `status`）、未命中时的 `error`。这是「SUT 到底调没调、调了什么」的可观察证据。
 
 ---
 

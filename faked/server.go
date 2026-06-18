@@ -22,7 +22,7 @@ import (
 	"github.com/McHarvvvy/mtkit/faked/http/ca"
 )
 
-// 调用日志文件名：落在 cfg.RuntimeDir 下，按约定派生、不可配。
+// 调用日志文件名：落在 cfg.CallLogDir 下，按约定派生、不可配。
 const (
 	grpcCallLogFileName = "grpc_calls.jsonl"
 	httpCallLogFileName = "http_calls.jsonl"
@@ -126,13 +126,13 @@ func (s *Server) Start(ctx context.Context) (Addrs, error) {
 		return Addrs{}, fmt.Errorf("ensure faked runtime dir %s: %w", s.cfg.RuntimeDir, err)
 	}
 
-	grpcLog := filepath.Join(s.cfg.RuntimeDir, grpcCallLogFileName)
+	grpcLog := filepath.Join(s.cfg.CallLogDir, grpcCallLogFileName)
 	gl, err := grpc.NewFileCallLogger(grpcLog)
 	if err != nil {
 		return Addrs{}, fmt.Errorf("open grpc call log: %w", err)
 	}
 	s.grpcLogger = gl
-	httpLog := filepath.Join(s.cfg.RuntimeDir, httpCallLogFileName)
+	httpLog := filepath.Join(s.cfg.CallLogDir, httpCallLogFileName)
 	hl, err := http.NewFileCallLogger(httpLog)
 	if err != nil {
 		s.stopLocked()

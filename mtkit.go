@@ -12,6 +12,7 @@ import (
 	"github.com/McHarvvvy/mtkit/container"
 	mtfaked "github.com/McHarvvvy/mtkit/faked"
 	"github.com/McHarvvvy/mtkit/orchestrator"
+	mtruntime "github.com/McHarvvvy/mtkit/runtime"
 	"github.com/McHarvvvy/mtkit/sut"
 )
 
@@ -148,7 +149,7 @@ func (t *MTKit) Run(m Runnable) int {
 		ClientHTTPTimeout:   secondsOrDefault(t.cfg.ClientMode.HTTPTimeoutSeconds, 60*time.Second),
 		SUTConfig:           toSUTRuntimeConfig(t.cfg.SUT),
 		SUT:                 t.sut,
-		Faked:               toFakedEngineConfig(t.cfg.Faked, t.cfg.RuntimeDir),
+		Faked:               toFakedEngineConfig(t.cfg.Faked, t.cfg.RuntimeDir, t.cfg.RuntimeFile),
 		FakedEnabled:        t.cfg.Faked.Enabled,
 		SchemaResources:     t.schemaResources,
 		ContainerRegistries: t.registrations,
@@ -172,12 +173,14 @@ func toSUTRuntimeConfig(cfg SUTConfig) sut.Config {
 
 // toFakedEngineConfig 把 mtkit 配置的 faked 块转成内嵌 server 配置。
 // gRPC endpoint 监听地址不在此——由 Endpoint.Listen() 在代码中声明。
-// faked 产物（调用日志 / 动态 CA）落在 <mtkit.runtime_dir>/faked 下。
-func toFakedEngineConfig(cfg FakedConfig, runtimeDir string) mtfaked.Config {
+// 动态 CA 等私有产物落在 <mtkit.runtime_dir>/faked 下；调用日志与 daemon.log / app.log
+// 同属诊断流，统一落在 <mtkit.runtime_dir>/logs 下（见 runtime.LogDir）。
+func toFakedEngineConfig(cfg FakedConfig, runtimeDir, runtimePath string) mtfaked.Config {
 	return mtfaked.Config{
 		ProxyListen: cfg.HTTP.ProxyListen,
 		CACertFile:  cfg.HTTP.CACertFile,
 		CAKeyFile:   cfg.HTTP.CAKeyFile,
 		RuntimeDir:  filepath.Join(runtimeDir, "faked"),
+		CallLogDir:  mtruntime.LogDir(runtimePath),
 	}
 }

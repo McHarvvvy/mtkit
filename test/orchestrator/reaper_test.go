@@ -11,10 +11,11 @@ import (
 	"github.com/McHarvvvy/mtkit/orchestrator/protocol"
 )
 
-// TestOR12_IdleAutoExit 验证租约全释放且空闲超 IdleTTL 后 daemon 自动退出并清理 runtime（F5）。
+// TestOR12_IdleAutoExit 验证租约全释放且空闲超 IdleTTL 后 daemon 自动退出（F5）。
 //
 // Given daemon IdleTTL=1s；When acquire 后 release 并等待；
-// Then daemon 的 Start 协程返回，runtime 文件被删除。
+// Then daemon 的 Start 协程返回；runtime 文件刻意保留（不在退出时删除）——供测试结束后查阅，
+// 正确性由下次启动的发现逻辑兜底（探活失败即删除重写）。
 func TestOR12_IdleAutoExit(t *testing.T) {
 	reg, _ := oneFakeReg("redis")
 	h := newHarness(t, []container.ContainerRegistration{reg}, func(c *mtorch.Config) {
@@ -31,8 +32,8 @@ func TestOR12_IdleAutoExit(t *testing.T) {
 	if !h.waitExit(15 * time.Second) {
 		t.Fatal("空闲 daemon 应在 IdleTTL 后自动退出")
 	}
-	if _, err := os.Stat(h.runtimePath); !os.IsNotExist(err) {
-		t.Fatalf("退出后 runtime 文件应被删除，os.Stat err=%v", err)
+	if _, err := os.Stat(h.runtimePath); err != nil {
+		t.Fatalf("退出后 runtime 文件应保留（不在退出时删除），os.Stat err=%v", err)
 	}
 }
 

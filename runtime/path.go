@@ -56,19 +56,34 @@ func ArtifactDir(runtimePath string) string {
 	return filepath.Dir(runtimePath)
 }
 
-// AppLogPath 返回 app 日志默认路径。
+// LogDir 返回集中存放日志文件的目录（app.log / daemon.log 等都落于此）。
+func LogDir(runtimePath string) string {
+	return filepath.Join(ArtifactDir(runtimePath), "logs")
+}
+
+// AppLogPath 返回 app（SUT）日志默认路径。
 func AppLogPath(runtimePath string) string {
-	return filepath.Join(ArtifactDir(runtimePath), "app.log")
+	return filepath.Join(LogDir(runtimePath), "app.log")
 }
 
 // DaemonLogPath 返回 daemon 日志默认路径。
 func DaemonLogPath(runtimePath string) string {
-	return filepath.Join(ArtifactDir(runtimePath), "daemon.log")
+	return filepath.Join(LogDir(runtimePath), "daemon.log")
 }
 
-// RunnerDir 返回 daemon runner 目录。
+// BinDir 返回可执行产物根目录（SUT 构建产物与 daemon re-exec 副本分列其下的 sut / daemon 子目录）。
+func BinDir(runtimePath string) string {
+	return filepath.Join(ArtifactDir(runtimePath), "bin")
+}
+
+// SUTBinDir 返回框架构建 SUT 二进制的存放目录。
+func SUTBinDir(runtimePath string) string {
+	return filepath.Join(BinDir(runtimePath), "sut")
+}
+
+// RunnerDir 返回 daemon re-exec 副本目录（仅 Windows 会产出 mt_*.exe）。
 func RunnerDir(runtimePath string) string {
-	return filepath.Join(ArtifactDir(runtimePath), "runner")
+	return filepath.Join(BinDir(runtimePath), "daemon")
 }
 
 func sanitizeProject(project string) string {

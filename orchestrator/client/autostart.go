@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -173,7 +174,45 @@ func prepareDaemonExecutable(exe, runtimePath string) (string, error) {
 	if err := copyFile(exe, runner); err != nil {
 		return "", fmt.Errorf("prepare daemon runner executable: %w", err)
 	}
+	pruneRunnerDir(runnerDir, maxRunnerCopies)
 	return runner, nil
+}
+
+// maxRunnerCopies 是 daemon re-exec 副本的保留上限：超出的旧副本在每次新建后被清理，防止无限累积。
+const maxRunnerCopies = 5
+
+// pruneRunnerDir 保留 runnerDir 下最新的 keep 个 mt_* 副本、删除更旧的。
+//
+// 仅 Windows 产出这些副本（见 prepareDaemonExecutable）。当前运行中的 daemon 二进制是刚复制出的最新一个、
+// 必在保留集内，且 Windows 文件锁也会阻止删除占用中的副本——故清理实际只作用于已退出 daemon 的陈旧副本。
+// 删除失败（仍被占用 / 竞争）一律忽略，绝不阻断启动流程。
+func pruneRunnerDir(runnerDir string, keep int) {
+	entries, err := os.ReadDir(runnerDir)
+	if err != nil {
+		return
+	}
+	type runnerFile struct {
+		path string
+		mod  time.Time
+	}
+	files := make([]runnerFile, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasPrefix(e.Name(), "mt_") {
+			continue
+		}
+		info, infoErr := e.Info()
+		if infoErr != nil {
+			continue
+		}
+		files = append(files, runnerFile{filepath.Join(runnerDir, e.Name()), info.ModTime()})
+	}
+	if len(files) <= keep {
+		return
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].mod.After(files[j].mod) })
+	for _, f := range files[keep:] {
+		_ = os.Remove(f.path)
+	}
 }
 
 func copyFile(src, dst string) error {

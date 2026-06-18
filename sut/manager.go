@@ -78,7 +78,7 @@ func NewManager(cfg Config, boot SUTBootPlan, input StartSUTInput) *Manager {
 		Build: proc.BuildSpec{
 			BinaryPath: cfg.BinaryPath,
 			SourceDir:  cfg.SourceDir,
-			OutputName: defaultOutputName(input.Project),
+			OutputName: defaultOutputName(input.Project, input.RuntimePath),
 			Args:       cfg.BuildArgs,
 			Timeout:    cfg.BuildTimeout,
 		},
@@ -134,7 +134,7 @@ func probeAddrs(boot SUTBootPlan) []string {
 	return boot.ProbeAddrs()
 }
 
-func defaultOutputName(project string) string {
+func defaultOutputName(project, runtimePath string) string {
 	name := strings.TrimSpace(project)
 	if name == "" {
 		name = "sut"
@@ -142,7 +142,9 @@ func defaultOutputName(project string) string {
 	if runtime.GOOS == "windows" {
 		name += ".exe"
 	}
-	return filepath.Join(".mtkit-build", name)
+	// SUT 二进制建到 mtkit 产物目录下的 bin/sut，与 logs / bin/daemon / faked 一并汇聚在 RuntimeDir，
+	// 避免污染被测项目的源码树（SourceDir）。绝对路径让 ensureBinary 直接采用、不再与 SourceDir 拼接。
+	return filepath.Join(mtruntime.SUTBinDir(runtimePath), name)
 }
 
 type nilBootPlanError struct{}

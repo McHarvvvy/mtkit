@@ -198,13 +198,14 @@ func (d *Daemon) Start(ctx context.Context) error {
 		PID:       os.Getpid(),
 		StartedAt: d.startedAt,
 	}
+	// 关键决策：runtime 文件不在 daemon 退出时清理，而是保留到下次启动——既方便测试结束后查阅，
+	// 也由发现逻辑兜底正确性：新进程 connectOrStart / autoStartDaemon 读到陈旧 runtime 会先探活，
+	// 探活失败即删除并重写（client.go connectOrStart、autostart.go），故陈旧文件不会被误用。
+	// 本次启动直接 Write 覆盖即“检测到旧的→写新的”。
 	if err = mtruntime.Write(d.runtimePath, d.runtimeInfo); err != nil {
 		_ = ln.Close()
 		return err
 	}
-	// 关键决策：无论是正常关闭还是 Serve 异常返回，都在退出路径兜底清理 runtime 文件。
-	// shutdownServer 中也会执行同样清理，这里再次兜底可覆盖异常分支并保持幂等。
-	defer mtruntime.Remove(d.runtimePath)
 
 	go d.loopReaper()
 	go func() {
@@ -392,7 +393,7 @@ func (d *Daemon) shutdownServer(ctx context.Context) {
 			defer cancel()
 			_ = d.httpServer.Shutdown(shutdownCtx)
 		}
-		mtruntime.Remove(d.runtimePath)
+		// 不在退出时删除 runtime 文件：保留供查阅，由下次启动的发现逻辑探活后清理重写（见 Start 注释）。
 	})
 }
 
