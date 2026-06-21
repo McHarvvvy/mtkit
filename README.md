@@ -1,333 +1,141 @@
 # mtkit
 
-mtkit 是 Go 应用的**集成测试基础设施框架**。它让你在 `TestMain` 一个入口里，把被测服务（SUT）需要的真实依赖环境一次性准备就绪，再开始跑测试——不必在每个测试包里手写「拉容器、等就绪、塞连接串、清理」的样板。
+mtkit 是 Go 应用的**集成测试基础设施框架**：在 `TestMain` 一个入口里，把被测服务（SUT）需要的真实依赖环境（容器 / fake 外部依赖 / 唯一数据 / 前置数据）一次性备好再跑测试，并让多个测试包跨进程复用同一套环境。原理与内部结构见 [docs/architecture.md](docs/architecture.md)。
 
-它解决这些问题：
-
-- **容器编排**：按声明启动 MySQL / Redis / MongoDB / TDengine / Pulsar 等测试容器，管理生命周期与清理。
-- **被测服务管理**：编译、启动、就绪探测、优雅停止 SUT 进程，并把依赖连接信息注入它。
-- **假外部依赖（faked）**：用内嵌的 fake gRPC server 与 HTTP(S) MITM 代理拦截 SUT 的出站调用，按规则应答。
-- **唯一测试数据（fixture）**：跨进程、跨用例生成无碰撞的 UUID / Email / Phone 等。
-- **前置数据装配（provision）**：跨测试进程只执行一次建表 / 索引 / 种子数据。
-- **跨包复用**：多个测试包共享一个后台 daemon 与同一组容器，靠租约复用，不重复拉起。
-
-> 想了解内部如何运作，读 [docs/architecture.md](docs/architecture.md)；术语以 [CONTEXT.md](CONTEXT.md) 为准。
-
----
-
-## 工作原理（一分钟版）
-
-mtkit **不另起独立守护程序**：第一个测试进程会把**自己这个测试二进制** re-exec 成一个后台 daemon（设环境变量 `MTKIT_RUN_MODE=daemon`），由它持有容器 / faked / SUT；后续测试进程作为 client 发现并复用它，靠租约 + 心跳保活，空闲超时后 daemon 自动退出并清理。
-
-你的代码对这一切无感——只写一次 `kit.Run(m)`，框架自动分流 daemon / client 两种角色。详见 [架构文档 §3](docs/architecture.md#3-运行模式与-re-exec-模型)。
-
----
-
-## 安装
+> 本文只讲**推荐用法与注意事项**——你要做什么、不做会怎样。完整的落地骨架在 [examples/](examples/)（按主题分目录的参照代码），各模块原理在 [docs/modules/](docs/modules/)。
 
 ```bash
 go get github.com/McHarvvvy/mtkit
 ```
 
-```go
-import mtkit "github.com/McHarvvvy/mtkit"
-```
-
-**前置要求**：本机可用的 Docker（容器编排与孤儿清理都依赖它）。
+**前置要求**：用到测试容器时需要本机可用的 Docker。若你完全不注册容器（只用 fake / 不依赖 DB 等），daemon 冷启动不碰 Docker，可无 Docker 运行。
 
 ---
 
-## 快速开始
+## 1. 最小入口
 
-### 1. 在 TestMain 装配
+一个测试包的 `TestMain` 只写一句 `kit.Run(m)`，框架自动分流 daemon / client 两种角色，你无感：
 
 ```go
-package myapp_test
-
-import (
-    "context"
-    "os"
-    "testing"
-
-    mtkit "github.com/McHarvvvy/mtkit"
-    "github.com/McHarvvvy/mtkit/container"
-    "github.com/testcontainers/testcontainers-go"
-    "github.com/testcontainers/testcontainers-go/wait"
-)
-
 func TestMain(m *testing.M) {
-    kit, err := mtkit.New("myapp", &mtkit.Config{
-        RuntimeDir: os.TempDir() + "/myapp-mtkit",
-    })
-    if err != nil {
-        panic(err)
-    }
-
-    kit.RegisterContainers(func(ctx context.Context) ([]container.ContainerRegistration, error) {
-        return []container.ContainerRegistration{{
-            Name: "redis",
-            Start: func(ctx context.Context) (testcontainers.Container, error) {
-                return testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-                    ContainerRequest: testcontainers.ContainerRequest{
-                        Name:         "myapp-redis",
-                        Image:        "redis:7-alpine",
-                        ExposedPorts: []string{"6379/tcp"},
-                        WaitingFor:   wait.ForListeningPort("6379/tcp"),
-                    },
-                    Started: true,
-                })
-            },
-            SUTEnv: func(ctx context.Context, c testcontainers.Container) (map[string]string, error) {
-                host, _ := c.Host(ctx)
-                port, _ := c.MappedPort(ctx, "6379/tcp")
-                return map[string]string{"REDIS_ADDR": host + ":" + port.Port()}, nil
-            },
-        }}, nil
-    })
-
-    // 同一句同时适配 daemon 与 client 两种模式，无需自己判断。
-    os.Exit(kit.Run(m))
+    kit, err := mtkit.New("myapp", &mtkit.Config{RuntimeDir: "test/.runtime/mtkit"})
+    if err != nil { panic(err) }
+    os.Exit(kit.
+        RegisterContainers(registerContainers). // 声明依赖容器
+        RegisterSUT(bootPlan).                   // 启用并托管 SUT（可选）
+        WithSchema(resources).                   // 跨进程幂等装配前置数据（可选）
+        Run(m))
 }
 ```
 
-`kit.Run(m)` 返回后透传 `m.Run()` 的退出码；进入 `m.Run()` 时容器已就绪、（若启用）SUT 与 faked 已就绪。
-
-### 2. 在用例里用 fixture 生成唯一数据
-
-用例需要 daemon 的地址与 token——从 runtime 文件读出（`kit.RuntimePath()` 给出路径）。
-
-> ⚠️ **必须 lazy 初始化**：runtime 文件在 `kit.Run(m)` **内部**才写好（daemon 自启 + 拿到租约之后），所以**不能在 `TestMain` 里 `Run` 之前**读它。用包级 `sync.Once`，在测试函数执行期才读 runtime、建 client。
-
-```go
-import (
-    fixture "github.com/McHarvvvy/mtkit/client/fixture"
-    mtruntime "github.com/McHarvvvy/mtkit/runtime"
-)
-
-var (
-    runtimePath string        // 在 TestMain 里由 kit.RuntimePath() 赋值
-    fxOnce      sync.Once
-    fxClient    *fixture.Client
-)
-
-func fxScope(t testing.TB) *fixture.CaseScope {
-    t.Helper()
-    fxOnce.Do(func() {        // 进程级只建一次，测试执行期才读 runtime
-        info, err := mtruntime.Read(runtimePath)
-        if err != nil {
-            t.Fatalf("fixture runtime unavailable: %v", err)
-        }
-        fxClient = fixture.New(info.Addr, info.Token)
-    })
-    return fxClient.NewScope(t)
-}
-
-func TestSignup(t *testing.T) {
-    s := fxScope(t)
-    email := s.Email()      // fixture+ab12...@mtkit.test，全局唯一
-    phone := s.Phone("CN")  // +86 开头的 E.164
-    id    := s.UUID()
-    _ = email; _ = phone; _ = id
-}
-```
-
-注册 fake 外部依赖、建数据库连接池（`PersistEnv`）同理，都遵守这条 lazy 规则——见 [faked 模块文档](docs/modules/faked.md) 与 [fixture 模块文档](docs/modules/fixture.md)。
+`RuntimeDir` 是 `Config` **唯一必填**项；其余字段与默认值见下方各节与 godoc。`kit.Run(m)` 进入 `m.Run()` 时，容器已就绪、（若启用）SUT 与 faked 已就绪，并如实透传 `m.Run()` 的退出码。完整可参照的入口见 [examples/test/bootstrap/run.go](examples/test/bootstrap/run.go)。
 
 ---
 
-## 配置
+## 2. 先选一种 SUT 接入方式
 
-两种配置方式，二选一：
+| 方式               | 怎么配                                                                                                                                                                                  | 适合                    |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- |
+| **mtkit 托管 SUT** | `RegisterSUT(plan)` + `SUT.Enabled`；框架编译 / 启动 / 探活 / 停止                                                                                                                      | CI、日常跑测，开箱即用  |
+| **手动启动 SUT**   | **不**调 `RegisterSUT`、`SUT.Enabled` 关、daemon `IdleTTL` 设很长；mtkit 只拉基础环境（daemon + 容器 + `Init`）并常驻，你据 runtime 容器地址 / 固定端口自配并手动起 SUT，再跑 `go test` | 断点调试 / 反复重启 SUT |
 
-1. **编程式**：`mtkit.New("project", &mtkit.Config{...})`（如上例）。
-2. **JSON 文件**：`mtkit.New("project", nil)` 会从 `MTKIT_CONFIG_PATH` 或默认 `~/.mtkit/<project>/mtkit.config.json` 加载。
-
-`RuntimeDir` 是**唯一必填**项。其余关键字段与默认值：
-
-| 字段                                            | 说明                                                    | 默认                              |
-| ----------------------------------------------- | ------------------------------------------------------- | --------------------------------- |
-| `RuntimeDir`                                    | 产物目录（runtime 文件 / 日志 / 构建产物 / faked 产物） | **必填**                          |
-| `RuntimeFile`                                   | runtime 文件路径（纯文件名 / 绝对路径）                 | `<RuntimeDir>/mtkit.runtime.json` |
-| `DaemonMode.Addr`                               | daemon 监听地址                                         | `127.0.0.1:0`（随机端口）         |
-| `DaemonMode.IdleTTLSeconds`                     | 空闲自动退出秒数                                        | 36                                |
-| `ClientMode.HTTPTimeoutSeconds`                 | client 请求 daemon 超时                                 | 60                                |
-| `SUT.Enabled` + `BinaryPath`/`SourceDir`        | 启用被测服务（给二进制或源码目录二选一）                | 关                                |
-| `SUT.Lifecycle.*Seconds`                        | 构建 / 就绪 / 优雅停止超时                              | 120 / 45 / 5                      |
-| `Faked.Enabled`                                 | 启用内嵌 faked 引擎                                     | 关                                |
-| `Faked.HTTP.{ProxyListen,CACertFile,CAKeyFile}` | HTTP 代理监听 / 静态 CA（成对，留空则动态生成 CA）      | 动态 CA                           |
-
-启用 SUT 后必须调 `RegisterSUT(plan)`（实现 `SUTBootPlan`），启用 faked 涉及 HTTPS 时 SUT 需装 CA 插件——细节见各模块文档。
+两种方式用例侧代码完全一致。参照 [examples/test/bootstrap/run.go](examples/test/bootstrap/run.go)（托管）与 [run_manual.go](examples/test/bootstrap/run_manual.go)（手动）。
 
 ---
 
-## 能力与文档导航
+## 3. 接入前提（先确认，否则白跑）
 
-| 你想做的事                     | 怎么配                           | 详见                                                                         |
-| ------------------------------ | -------------------------------- | ---------------------------------------------------------------------------- |
-| 拉起依赖容器并把连接串注入 SUT | `RegisterContainers`             | [container.md](docs/modules/container.md)                                    |
-| 编译并管理被测服务进程         | `RegisterSUT` + `SUT.Enabled`    | [orchestration.md §5](docs/modules/orchestration.md#5-sut被测服务的语义边界) |
-| 生成唯一测试数据               | `fixture.Client` / `CaseScope`   | [fixture.md A](docs/modules/fixture.md#a-唯一数据生成)                       |
-| 跨进程幂等装配前置数据         | `WithSchema([]fixture.Resource)` | [fixture.md B](docs/modules/fixture.md#b-前置数据装配provision)              |
-| fake gRPC / HTTP(S) 外部依赖   | `Faked.Enabled` + `fake.Client`  | [faked.md](docs/modules/faked.md)                                            |
+mtkit 对 SUT 有硬性前提；不满足时，第一个碰到的用例会以**莫名的业务错误码 / 500** 暴露，排查成本极高。先确认：
 
-程序 API 的逐项参照以源码 godoc 为准（导出标识符均有中文注释）。
+- **SUT 要能在测试环境下启动起来**：容器、初始数据、fake 站点由 mtkit 备好后，SUT 必须能正常起来——前提是把 SUT 连的地址都指向这些备好的东西。要是 SUT 里有 mtkit 给不了、也模拟不了的组件（某个起不来的外部依赖、某段只在生产才成立的初始化），那就**入侵式地改 SUT 的代码**：加一个测试专用的构建分支或开关，把这块绕过或换掉，让它在测试环境下能起来。这是底线，起不来后面全免谈。
+- **追完整条调用链，而非只看 handler 直接碰的表 / 服务**：中间件隐式依赖（如登录态网关反查账号表）、写后副作用（缓存失效、事件发送）、隐藏的跨服务调用，都要么用 fake 覆盖、要么确认 SUT 对其失败容错。这些隐式依赖也要落进前置数据（见 §5）。
+- **HTTPS faking 需给 SUT 装 CA 插件**：faked 对出站 HTTPS 做 MITM、用动态 CA 现签证书，SUT 必须信任这张 CA 才能握手。把 [addons/](addons/) 的 CA 插件拷进 SUT main 包、以 `-tags mtkit_it` 构建（boot plan 默认已加）。仅 fake HTTPS 时需要；纯 gRPC / 明文 HTTP 不需要。
+- **SUT 工作目录要显式钉死**：框架把 SUT 二进制建在 `RuntimeDir` 下、不在源码目录，故 boot plan 里 **不能由二进制路径推导工作目录**，必须显式把 `cmd.Dir` 设为 SUT 约定的工作目录，否则相对路径加载配置 / 资源会失败。见 [examples/test/bootstrap/sut.go](examples/test/bootstrap/sut.go)。
 
 ---
 
-## 调用者职责：框架之外你要自己写的部分
+## 4. 推荐测试目录结构
 
-mtkit 是「**机制框架 + 一组缝（seam）**」：上面那些能力，框架给的都是**机制**，每条机制都留了一个**必须由你用领域知识填的缝**。下表是分工地图——左侧框架包办，右侧是你要自己写的：
+把测试代码按职责分层、依赖方向无环——这是并发、复用、可维护的前提。[examples/](examples/) 是一个可编译的玩具工程，它的 `test/` 目录就是这套结构的活样例：
 
-| 能力        | 框架提供的机制                            | 你必须自己写的领域内容                                                                  | 详见                                                            |
-| ----------- | ----------------------------------------- | --------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
-| 唯一数据    | 全局发号 + HiLo 缓存 + 保形加密           | （几乎无）直接调 `CaseScope`                                                            | [fixture.md A](docs/modules/fixture.md#a-唯一数据生成)          |
-| fake server | gRPC fake set + HTTP MITM 代理 + 调用日志 | **endpoint 声明**、**CA addon 拷入 SUT**、**TestMain blank-import**、**逐用例规则注册** | [faked.md](docs/modules/faked.md)                               |
-| 前置装配    | 跨进程幂等 once-runner + 文本账本         | **`Resource` 实现**（框架不内置任何类型）、**幂等 `Apply`**                             | [fixture.md B](docs/modules/fixture.md#b-前置数据装配provision) |
-| 种子数据    | 复用 provision 或 fixture+PersistEnv      | **判定「共享种子 vs 每用例数据」并自己读写**                                            | 见下 §3                                                         |
-
-### 贯穿规则：一切在 `m.Run()` 期间 lazy 初始化
-
-runtime 文件（含 `SUTEnv`、faked 地址、token）只有在 `kit.Run(m)` **内部**（daemon 自启 + 拿到租约之后）才写好。所以 **fake client / fixture client / PersistEnv 都不能在 `TestMain` 的 `Run` 之前建**——必须用包级 `sync.Once`，在测试函数执行期才 `mtruntime.Read(runtimePath)` 再构造。下面三块都遵守这条规则。
-
-### 1. fake server：声明 → 接线 → 注册
-
-框架给了 gRPC fake server set 与 HTTP MITM 代理，但「有哪些外部依赖、监听什么、用什么 env key」是**项目领域知识**，要你写代码声明。三步：
-
-**① 声明 endpoint（代码里 `init()` 自注册）。** gRPC 每个 unary RPC 写一个 typed 薄壳，严守「四步法」（收 typed 请求 → 取 route_key → 建 response 容器 → 调 `Engine.HandleUnary`，不写业务分支）：
-
-```go
-func init() { fakedgrpc.RegisterEndpoint(&echoEndpoint{}) }
-
-type echoEndpoint struct{}
-func (echoEndpoint) ID() string     { return "echo" }               // control API 里的 endpoint 取值
-func (echoEndpoint) EnvKey() string { return "ECHO_GRPC_ADDR" }     // 注入 SUT 的直连地址 env 名
-func (echoEndpoint) Listen() string { return "127.0.0.1:0" }        // :0 让 OS 分配端口
-func (echoEndpoint) Register(s *googrpc.Server, deps fakedgrpc.EndpointDeps) {
-    pb.RegisterEchoServer(s, &echoService{Engine: deps.Engine})
-}
-func (echoEndpoint) Methods() []fakedgrpc.MethodSpec { /* 供注册期校验 response 类型 */ }
-
-func (s *echoService) Ping(ctx context.Context, req *pb.PingReq) (*pb.PingRes, error) {
-    out := &pb.PingRes{}
-    err := s.Engine.HandleUnary(ctx, fakedgrpc.Call{
-        Endpoint: "echo", FullMethod: pb.Echo_Ping_FullMethodName,
-        RouteKey: req.GetKey(), Response: out, // route_key 从真实请求字段取
-    })
-    return out, err
-}
+```
+test/
+├── bootstrap/   # 顶层启动层：TestMain 入口 Run、容器注册、SUT boot plan、RuntimePath
+├── fake/        # 外部依赖 fake：grpc/ http/（每服务一文件，init() 自注册）
+├── fixture/
+│   ├── harness/   # 进程级单例引导（懒读 runtime → fixture.Client / PersistEnv）
+│   ├── schema/    # provision 资源声明（一资源一函数）
+│   ├── seeders/   # case 级造数（只做 Given）
+│   ├── request/   # 请求 helper（签名 / 身份注入 / 响应解析）
+│   └── peephole/  # 后门观察兜底（尽量少用）
+└── entry/       # 入口黑盒测试：http/ grpc/ …（每包一个 TestMain）
 ```
 
-HTTP 同理：实现 `Endpoint{ Host(), Routes() }`，每个 `Route` 给 `Method`/`Path` + `GenRouteKey`。细节与 route_key helper 见 [faked.md §1.2 / §2.1](docs/modules/faked.md#12-声明一个-fake-endpoint主扩展点)。
-
-**② 让 SUT 信任 fake 的 HTTPS（仅 HTTPS faking 需要）。** faked 对出站 HTTPS 做 MITM、用动态 CA 现签叶证书，SUT 必须信任这张 CA 才能握手。把 [`addons/mtkit_ca_addon.go`](addons/) **拷进 SUT 的 main 包**（boot plan 加 `-tags mtkit_it`，框架默认已加）。两条限制：只覆盖走 `http.DefaultTransport` 的 client；SUT 不可在 `init` 阶段就发起需被 fake 的 HTTPS。
-
-**③ TestMain blank-import + 用例里注册规则。** blank-import endpoint 包（让 client 与 daemon 都注册它），用例里链式注册、`Apply(t)` 提交：
-
-```go
-import _ "yourproject/test/fakeendpoints" // 触发 init() 注册
-
-fc := fake.New(info.Addr, info.Token) // info 从 mtruntime.Read 懒读
-fc.GRPC().On("echo", pb.Echo_Ping_FullMethodName).
-    RouteKey(caseKey).                       // 必填，并发隔离根基（见下「为什么能并行」）
-    Static(&pb.PingRes{Msg: "pong"}).
-    Apply(t)
-```
-
-### 2. 前置数据装配（provision）：自己实现 Resource
-
-**框架刻意不提供任何内置 `Resource` 类型，只给接口。** 理由：provision 形态由业务决定、无法预见，且语义全在 DDL/建库/建 namespace 等具体动作里，封装成框架类型并无价值。用一个通用 `funcResource`（key + apply 闭包）即可，经 `kit.WithSchema` 注册：
-
-```go
-type funcResource struct {
-    key   string
-    apply func(ctx context.Context, env *fixture.PersistEnv) error
-}
-func (r funcResource) Key() string { return r.key }
-func (r funcResource) Apply(ctx context.Context, env *fixture.PersistEnv) error { return r.apply(ctx, env) }
-
-kit.WithSchema([]fixture.Resource{
-    funcResource{key: "mysql.app.db", apply: func(ctx context.Context, env *fixture.PersistEnv) error {
-        _, err := env.MySQL("MYSQL_DSN").ExecContext(ctx, "CREATE DATABASE IF NOT EXISTS `app`")
-        return err
-    }},
-    funcResource{key: "mysql.app.users", apply: func(ctx context.Context, env *fixture.PersistEnv) error {
-        _, err := env.MySQL("MYSQL_DSN").ExecContext(ctx,
-            "CREATE TABLE IF NOT EXISTS app.users (uid BIGINT PRIMARY KEY)") // IF NOT EXISTS → 重入幂等
-        return err
-    }},
-})
-```
-
-三条硬约束：
-
-- **slice 顺序即执行顺序**——「建库」排「建表」前。
-- **`Key()` 一旦确定不可再改**——改了等于换标识，旧账本条目永不命中，会重复 `Apply`。
-- **`Apply` 必须幂等可重入**——`IF NOT EXISTS` / 容忍「已存在」/ list-then-create / 多写用事务。框架保证同一 daemon 生命周期内同一 key 只跑一次，但 daemon 复用、重启会再次进入。
-
-连接从 `Apply` 的 `*PersistEnv` 拿（`env.MySQL(key)` / `Redis` / `Mongo` / `PulsarAdmin` / `TDengine`）；`key` 是 `SUTEnv` 的 key（如 `"MYSQL_DSN"`），不是容器名。深入见 [fixture.md B](docs/modules/fixture.md#b-前置数据装配provision)。
-
-### 3. 种子数据（seeding）：没有专用原语，二选一
-
-**mtkit 没有 seeding API。** 种子数据是上面两条机制的**用法**，按「数据归谁」二选一：
-
-| 数据性质                                                 | 用什么               | 怎么做                                                                     |
-| -------------------------------------------------------- | -------------------- | -------------------------------------------------------------------------- |
-| **跨用例共享、应只建一次**（字典表、基准账号、固定枚举） | provision            | 当成一条 `Resource`，在 `Apply` 里 `INSERT`，享受跨进程只跑一次 + 账本幂等 |
-| **每用例独占、不可共享**（本用例要创建的实体）           | fixture + PersistEnv | 用例内用 `CaseScope` 生成唯一值，经进程级单例 `PersistEnv` 写库            |
-
-> 判据一句话：**「跨用例可共享且只建一次」→ provision；「每用例独占」→ fixture + PersistEnv。** 把每用例数据塞进 provision 是错配——provision 是「只跑一次」语义，与并行用例的隔离需求相悖。
+依赖方向：`bootstrap → fake/* + schema`；`harness → bootstrap`；`seeders/request → harness`；`entry → bootstrap + fixture/*`。
 
 ---
 
-## 为什么能并行：数据隔离机制
+## 5. 落地纪律（填缝时最容易错的地方）
 
-mtkit 在两个层面提升效率，二者都靠**隔离**而非串行化达成：
+每条都附「不做会怎样」，对应骨架在 examples。
 
-- **跨进程复用**：多个测试包共享**同一个 daemon + 同一组容器**（靠租约），不必每个包重拉容器。`go test -p N ./...` 并行跑多个包时，它们汇聚到一个后台环境。
-- **进程内并行**：用例可放心 `t.Parallel()`。并行用例之所以不互相踩，是因为**每个用例操作的是一块互不相交的数据**，而不是靠加锁排队。
+- **fixture / fake / PersistEnv 客户端在用例里懒建，别在 `Run` 之前建。** 它们要读 runtime 信息，那是 `Run` 跑起来才写好的；等用例执行时它一定就绪，所以用包级 `sync.Once` 在第一次用到时建一份就好。这些客户端是进程级单例，**别在用例 cleanup 里 `Close`**——关掉会连累其他并发用例。见 [examples/test/fixture/harness](examples/test/fixture/harness/harness.go)。
 
-隔离模型分两层——想清楚「哪层共享、哪层独占」是用好并行的关键：
+- **前置数据分三层，别放错。** ① **容器 `Init`**——SUT 启动就必须有的东西（建库、基础 namespace），没有它 SUT 起不来；② **provision**（`WithSchema`）——测试用的表 / 字典 / 基准数据，跨用例共享、跨进程只建一次；③ **seeder**——每个用例自己要的那份新数据，用例里现造。归层判断：SUT 启动就要 → Init；多个用例共用且只建一次 → provision；每次要一份新的 → seeder。放错会出问题，最常见是把每用例数据塞进 provision（它只跑一次，给不了「每次一份新的」）。见 [docs/modules/fixture.md](docs/modules/fixture.md)。
 
-### 共享层：只读 / 幂等，建一次给所有人用
+- **provision 读权威 schema 原样执行，别臆造 DDL。** 建表前先找权威 schema 定义，有则原样读盘执行——臆造的宽松表会丢掉生产真实约束（唯一键、定长字段），让测试「对着错的表」绿、却在生产炸。`Resource.Key()` 一经确定不可改（改了等于换标识 → 重复 `Apply`），`Apply` 必须幂等可重入。见 [examples/test/fixture/schema](examples/test/fixture/schema/shop.go)。
 
-容器与 provision 出的 schema/种子属于此层。它们要么只读、要么幂等，被所有用例（跨进程、跨 goroutine）共享读取。这一层**不是**隔离对象——正因为它稳定共享，才不必每个用例重建。
+- **seeder 不可重入，返回值要复用须自存。** seeder 每次调用都生成一组框架保证互不冲突的新值 / 新记录，可被多个用例复用；但它**不记忆**——之后还要用这些值（id/guid/email…），得由调用方自己存下它返回的对象。seeder 只负责造数据，不声明 schema、不发请求、不断言。见 [examples/test/fixture/seeders](examples/test/fixture/seeders/seeder_account.go)。
 
-### 独占层：每用例切一块互不相交的命名空间
+- **fake 规则必须带 per-case route_key。** gRPC 写 typed 薄壳严守「四步法」（收 typed 请求 → 取 route_key → 建 response 容器 → 调 `Engine.HandleUnary`，**不写业务分支**）；route_key 取真实请求字段，建议派生自 `t.Name()` + 原子序号。route_key 为空时引擎直接报错、不会悄悄放行——这是并发隔离的根基。endpoint 经 `init()` 自注册，TestMain blank-import 让 daemon 可见。见 [examples/test/fake](examples/test/fake/)、[docs/modules/faked.md](docs/modules/faked.md)。
 
-并行用例真正「各写各的」靠两套**唯一命名**机制，它们是数据隔离的核心：
+- **断言只咬对外契约。** 验证优先用**前门**：尽量用 get 接口验 set 结果（前门读顺带验证缓存读穿、写后失效整条对外可见性）；前门读写在**用例侧**。直查存储（DB/Redis）是后门，万不得已才用——它耦合 SQL 列 / cache key，容易随重构碎掉，还会掩盖读链路自己的 bug。断言对 seeder 返回对象的字段、不写裸字面值；写后读关键路径用「预读→改→再读」暴露缓存未失效类 bug；只构造可达状态。见 [examples/test/entry/http](examples/test/entry/http/profile_test.go)。
 
-**① fixture 唯一值——单一真相源的全局计数器。** 唯一性只在一处保证：daemon 侧一个原子计数器，每次发号返回半开区间 `[start, end)`，**跨调用者天然不相交**。于是任意两个并行用例各自 `s.UUID()` / `s.Email()` / `s.UniqueInt()` 拿到的值必不相同——它们可以写同一张表，但落在不同的行，零冲突。测试侧用 HiLo 缓存把热路径变成本地无锁自增，**唯一性跨 goroutine、跨进程都成立**。
-
-```go
-// 两个并行用例各自创建「一个用户」，uid/email 必不同 → 同表不同行，无需协调
-func TestA(t *testing.T) { t.Parallel(); s := fxScope(t); createUser(t, s.UniqueInt(10), s.Email()) }
-func TestB(t *testing.T) { t.Parallel(); s := fxScope(t); createUser(t, s.UniqueInt(10), s.Email()) }
-```
-
-**② faked route_key——同一路由按用例分流。** N 个并行用例共享同一个 faked 引擎，靠 route_key 互不串扰：每个用例注册规则时带**本用例专属的 route_key**，引擎在 SUT 真实调用时从请求里现算 route_key，按 `(endpoint, method, route_key)` 精确命中——只命中本用例那条规则。建议把 route_key 派生自 `t.Name()` + 进程内原子序号，保证跨用例、跨重复执行都唯一：
-
-```go
-var caseKeySeq atomic.Uint64
-func caseKey(t testing.TB) string {
-    name := strings.NewReplacer("/", "_", " ", "_").Replace(t.Name())
-    return fmt.Sprintf("%s-%d", name, caseKeySeq.Add(1))
-}
-```
-
-### 为什么这套设计能真正并行
-
-隔离靠「命名空间不相交」而非加锁，所以**并行用例之间没有竞争点**。全局仅剩两处串行化，都低频且廉价：HiLo 补块（每 65536 次取号一次回环往返）、provision 账本锁（每个 key 一次、且 `IF NOT EXISTS`）。热路径全程无锁。
-
-要让并行真正成立，你（调用方）需守住三条契约：
-
-- **外部可见数据一律从 fixture 取唯一值**，不写死字面值、不用固定主键 / 固定 key——否则两个并行用例会撞同一行。
-- **fake 规则必须带 per-case route_key**（为空一律 fail-loud，正是为杜绝「裸路由」误匹配）。
-- **每用例数据不进 provision**（那是「只跑一次」的共享语义）；`PersistEnv` / fixture client 是进程级单例，**别在用例 cleanup 里 `Close`**，否则会拖垮其他并发用例。
+> **为什么能并行**：隔离靠「命名空间不相交」而非加锁——并行用例各自从 fixture 取唯一值（同表不同行）、fake 规则各带 route_key（同路由按用例分流），故可放心 `t.Parallel()`。原理见 [docs/modules/fixture.md](docs/modules/fixture.md) 与 [faked.md](docs/modules/faked.md)。
 
 ---
 
-## 注意事项
+## 6. 你要关心的环境变量
 
-- **必须有 Docker**：daemon 冷启动会列容器做孤儿清理；无 Docker 会启动失败。
-- **退出码如实透传**：`kit.Run(m)` 返回 `m.Run()` 的码；装配非法（如未 `RegisterContainers`、容器重名、SUT 启用却没 `RegisterSUT`）直接返回 1 且不跑用例。
-- **空闲自动回收**：所有测试进程结束、空闲超过 `IdleTTLSeconds` 后 daemon 自动退出并清理容器 / runtime 文件。调短它可加快本地回收，调长可让多个测试包之间复用环境。
+你真正要打交道的环境变量只有一类：**你和 SUT 之间的共享契约**——同一个名字，声明的一侧和 SUT 读取的一侧必须逐字对上。mtkit 自动注入的那些（出站代理、CA 路径、运行模式）你不用管，也不用知道。
+
+| 变量                                                           | 你在哪声明    | 谁赋值             | 要点                                                    |
+| -------------------------------------------------------------- | ------------- | ------------------ | ------------------------------------------------------- |
+| fake endpoint 的 `EnvKey()`                                    | endpoint 里   | mtkit 注入直连地址 | 名字必须和 SUT 读这个依赖地址时用的名字一致             |
+| 容器连接串 key（`SUTEnv` 回调吐出，如 `SHOP_IT_MYSQL_DSN`）    | containers 里 | mtkit 注入 SUT     | SUT 连容器、`PersistEnv` 取连接，用的是同一个 key       |
+| SUT 切测试配置用的开关（若你的 SUT 靠环境变量区分测试 / 正式） | boot plan 里  | 你自己设           | 纯属你项目的约定，mtkit 不关心；用来让 SUT 加载测试配置 |
+
+> SUT 自己监听的服务端口不在这张表里，也**不会出现在 runtime 文件里**——一个服务开几个端口、各是什么语义，mtkit 不替你猜。把它定义成测试侧的常量，给 boot plan 的 `ProbeAddrs`（就绪探测）和 request helper（拼请求基址）共用。别去 runtime 里找「SUT 端口」，那里没有。
+
+---
+
+## 7. 注意事项与排查
+
+- **产物记得 gitignore**：runtime 文件、SUT/daemon 二进制、`logs/`、`faked/` 的 CA 全落在 `RuntimeDir` 下。把它放进测试目录（如 `test/.runtime/mtkit`）排查方便，一条目录级忽略就够：`/test/.runtime/`。
+
+- **Docker 仅在注册容器时才需要**：daemon 冷启动会清理同名孤儿容器，但这步在「零注册容器」时直接短路返回、根本不创建 Docker 客户端。所以你注册了容器才需要本机有可用 Docker；只用 fake、不依赖容器时无 Docker 也能跑。
+- **首跑超时**：首次会拉镜像 + 全量编译 SUT，可能远超 client 默认 acquire 超时（60s）。把 `ClientMode.HTTPTimeoutSeconds` 调大（如 300）并预拉镜像。镜像 tag 用本机 / CI 可得的版本，避免每次首拉。
+- **daemon 复用 / 空闲回收**：`DaemonMode.IdleTTLSeconds` 控制空闲多久自动退出（连带停容器）。调短=本地快回收；调长=多包之间复用同一环境（复跑可从 30s 级降到 2s 级）。`go test ./...` 跨包并发共享一个 daemon + 一组容器（靠租约），前提是第 5 节的隔离纪律都守住。
+- **装配非法直接返回 1**：未 `RegisterContainers`、容器重名、SUT 启用却没 `RegisterSUT` 等，`Run` 返回 1 且不跑用例。
+
+| 现象                         | 先看哪里（`RuntimeDir` 下）                                                       |
+| ---------------------------- | --------------------------------------------------------------------------------- |
+| 用例报莫名业务错误码         | `logs/app.log`（SUT 真实堆栈：nil RPC client、缺表等）                            |
+| daemon 起不来 / acquire 超时 | `logs/daemon.log` + `docker ps`（容器是否就绪）                                   |
+| fake 没命中                  | `logs/{grpc,http}_calls.jsonl`（`matched=false` 即漏注册规则 / route_key 不匹配） |
+| 连接信息对不上               | `mtkit.runtime.json` 的 `sut_env`（mtkit 实际注入 SUT 的 env 全集）               |
+| HTTPS 握手失败               | 确认 CA 插件已拷入 SUT main 包、构建带 `-tags mtkit_it`                           |
+
+---
+
+## 8. 文档与示例导航
+
+| 你想了解                          | 去哪                                                           |
+| --------------------------------- | -------------------------------------------------------------- |
+| 落地骨架（按主题的参照代码）      | [examples/](examples/)                                         |
+| 宏观结构 / 进程分流 / 数据流      | [docs/architecture.md](docs/architecture.md)                   |
+| daemon/client、租约、SUT/进程管理 | [docs/modules/orchestration.md](docs/modules/orchestration.md) |
+| 容器声明与编排                    | [docs/modules/container.md](docs/modules/container.md)         |
+| 唯一数据与前置数据装配            | [docs/modules/fixture.md](docs/modules/fixture.md)             |
+| 假冒 gRPC / HTTP(S) 外部依赖      | [docs/modules/faked.md](docs/modules/faked.md)                 |
+| 某术语到底指什么                  | [CONTEXT.md](CONTEXT.md)                                       |
