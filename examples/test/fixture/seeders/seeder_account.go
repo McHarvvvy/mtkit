@@ -15,7 +15,7 @@ import (
 
 	fixture "github.com/McHarvvvy/mtkit/client/fixture"
 
-	"shopdemo/test/bootstrap"
+	"shopdemo/test/contract"
 	"shopdemo/test/fixture/harness"
 	"shopdemo/test/fixture/request"
 )
@@ -89,7 +89,7 @@ func insertAccount(t testing.TB, a *Account) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	// 走进程级 PersistEnv（不在用例 cleanup 关闭）；列对齐权威 schema/sql/accounts.sql。
-	db := harness.Persist(t).MySQL(bootstrap.EnvKeyMySQLDSN)
+	db := harness.Persist(t).MySQL(contract.EnvKeyMySQLDSN)
 	const stmt = `INSERT INTO accounts (account_id, guid, email, status, create_time) VALUES (?,?,?,?,?)`
 	if _, err := db.ExecContext(ctx, stmt, a.AccountID, a.Guid, a.Email, 1, time.Now().Unix()); err != nil {
 		t.Fatalf("seed: insert accounts accountID=%d: %v", a.AccountID, err)
@@ -100,7 +100,7 @@ func insertProfile(t testing.TB, a *Account) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	db := harness.Persist(t).MySQL(bootstrap.EnvKeyMySQLDSN)
+	db := harness.Persist(t).MySQL(contract.EnvKeyMySQLDSN)
 	const stmt = `INSERT INTO profiles (account_id, nickname, update_time) VALUES (?,?,?)`
 	if _, err := db.ExecContext(ctx, stmt, a.AccountID, a.Nickname, time.Now().Unix()); err != nil {
 		t.Fatalf("seed: insert profiles accountID=%d: %v", a.AccountID, err)

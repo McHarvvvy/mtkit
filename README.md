@@ -60,10 +60,11 @@ mtkit 对 SUT 有硬性前提；不满足时，第一个碰到的用例会以**�
 
 ```
 test/
-├── bootstrap/   # 顶层启动层：TestMain 入口 Run、容器注册、SUT boot plan、RuntimePath
+├── contract/    # 最底层共享契约：env key、SUT 地址、runtime 路径（谁都依赖它、它不依赖谁）
+├── bootstrap/   # 顶层启动层：TestMain 入口 Run、容器注册、SUT boot plan
 ├── fake/        # 外部依赖 fake：grpc/ http/（每服务一文件，init() 自注册）
 ├── fixture/
-│   ├── harness/   # 进程级单例引导（懒读 runtime → fixture.Client / PersistEnv）
+│   ├── harness/   # 进程级单例引导（懒读 runtime → fixture.Client / PersistEnv / fake.Client）
 │   ├── schema/    # provision 资源声明（一资源一函数）
 │   ├── seeders/   # case 级造数（只做 Given）
 │   ├── request/   # 请求 helper（签名 / 身份注入 / 响应解析）
@@ -71,7 +72,7 @@ test/
 └── entry/       # 入口黑盒测试：http/ grpc/ …（每包一个 TestMain）
 ```
 
-依赖方向：`bootstrap → fake/* + schema`；`harness → bootstrap`；`seeders/request → harness`；`entry → bootstrap + fixture/*`。
+依赖方向自上而下、无环：`contract` 在最底、被各包依赖；`bootstrap → contract + fake/*`，且**只被 `entry` 依赖**；`harness/schema/seeders/request → contract`；`entry → bootstrap + fixture/*`。叶子包需要的共享值（env key、地址、路径）一律放进 `contract`，**不反向 import 顶层的 `bootstrap`**。
 
 ---
 
@@ -87,7 +88,7 @@ test/
 
 - **seeder 不可重入，返回值要复用须自存。** seeder 每次调用都生成一组框架保证互不冲突的新值 / 新记录，可被多个用例复用；但它**不记忆**——之后还要用这些值（id/guid/email…），得由调用方自己存下它返回的对象。seeder 只负责造数据，不声明 schema、不发请求、不断言。见 [examples/test/fixture/seeders](examples/test/fixture/seeders/seeder_account.go)。
 
-- **fake 规则必须带 per-case route_key。** gRPC 写 typed 薄壳严守「四步法」（收 typed 请求 → 取 route_key → 建 response 容器 → 调 `Engine.HandleUnary`，**不写业务分支**）；route_key 取真实请求字段，建议派生自 `t.Name()` + 原子序号。route_key 为空时引擎直接报错、不会悄悄放行——这是并发隔离的根基。endpoint 经 `init()` 自注册，TestMain blank-import 让 daemon 可见。见 [examples/test/fake](examples/test/fake/)、[docs/modules/faked.md](docs/modules/faked.md)。
+- **fake 规则必须带 per-case route_key。** gRPC 写 typed 薄壳严守「四步法」（收 typed 请求 → 取 route_key → 建 response 容器 → 调 `Engine.HandleUnary`，**不写业务分支**）。用例注册规则时的 route_key **必须等于 SUT 出站请求里那个字段的实际值**（如 account_id / guid / query 参数）——引擎据此把「本用例的规则」与「SUT 真实发出的调用」精确配对。用 seeder 造的每用例唯一字段当 route_key：既保证命中、又天然隔离并发用例。route_key 为空时引擎直接报错、不会悄悄放行。endpoint 经 `init()` 自注册，TestMain blank-import 让 daemon 可见。endpoint 声明见 [examples/test/fake](examples/test/fake/)，用例侧注册/断言见 [profile_fake_test.go](examples/test/entry/http/profile_fake_test.go)、[docs/modules/faked.md](docs/modules/faked.md)。
 
 - **断言只咬对外契约。** 验证优先用**前门**：尽量用 get 接口验 set 结果（前门读顺带验证缓存读穿、写后失效整条对外可见性）；前门读写在**用例侧**。直查存储（DB/Redis）是后门，万不得已才用——它耦合 SQL 列 / cache key，容易随重构碎掉，还会掩盖读链路自己的 bug。断言对 seeder 返回对象的字段、不写裸字面值；写后读关键路径用「预读→改→再读」暴露缓存未失效类 bug；只构造可达状态。见 [examples/test/entry/http](examples/test/entry/http/profile_test.go)。
 

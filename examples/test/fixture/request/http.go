@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"shopdemo/test/bootstrap"
+	"shopdemo/test/contract"
 )
 
 // Resp 是统一响应外壳的解析结果。Data 留作 RawMessage，按需经 DecodeData 解析成业务结构。
@@ -68,7 +68,7 @@ func PostV1(t testing.TB, path string, payload any, opts ...Option) *Resp {
 	}
 
 	body, _ := json.Marshal(payload) // 真实项目此处套统一外壳 + 签名
-	req, err := http.NewRequest(http.MethodPost, bootstrap.SUTHTTPBaseURL+path, bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, contract.SUTHTTPBaseURL+path, bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("request: 构造请求失败: %v", err)
 	}

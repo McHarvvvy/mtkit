@@ -10,7 +10,6 @@ package bootstrap
 import (
 	"context"
 	"log"
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -18,33 +17,25 @@ import (
 	fixture "github.com/McHarvvvy/mtkit/client/fixture"
 	"github.com/McHarvvvy/mtkit/container"
 
+	"shopdemo/test/contract"
+
 	// fake endpoint 经各包 init() 自注册进内嵌 faked 引擎；daemon == 测试二进制（re-exec），
 	// 故 client 与 daemon 都要 blank-import 这些包，引擎才“看得见”这些 endpoint。
 	_ "shopdemo/test/fake/grpc"
 	_ "shopdemo/test/fake/http"
 )
 
-const (
-	projectName          = "shopdemo"
-	defaultRuntimeSubdir = "test/.runtime/mtkit"
-	// 与 mtkit 默认 RuntimeFile（<RuntimeDir>/mtkit.runtime.json）同名；用例侧经 RuntimePath()
-	// 复算同一路径懒读 runtime，两处必须一致。
-	runtimeFileName = "mtkit.runtime.json"
-)
-
-// RuntimePath 返回 mtkit daemon 落盘的 runtime 文件路径，供 fixture/harness 在 m.Run 执行期懒读。
-func RuntimePath() (string, error) {
-	root, err := repoRoot()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(root, filepath.FromSlash(defaultRuntimeSubdir), runtimeFileName), nil
-}
+const projectName = "shopdemo"
 
 // Run 是各 entry 测试包 TestMain 的统一入口。resources 由调用方（各包的 getResources）声明本包
 // 所需的前置 provision 资源——不同测试包 provision 需求不同，故由包决定、灵活组合，bootstrap 不写死业务 schema。
 func Run(m *testing.M, resources ...fixture.Resource) int {
-	root, err := repoRoot()
+	runtimeDir, err := contract.RuntimeDir()
+	if err != nil {
+		log.Printf("bootstrap: locate runtime dir: %v", err)
+		return 1
+	}
+	root, err := contract.RepoRoot()
 	if err != nil {
 		log.Printf("bootstrap: locate repo root: %v", err)
 		return 1
@@ -52,7 +43,7 @@ func Run(m *testing.M, resources ...fixture.Resource) int {
 
 	cfg := &mtkit.Config{
 		// RuntimeDir 是唯一必填项；落在测试目录下（与测试代码同处、一条 gitignore 兜住所有产物）。
-		RuntimeDir: filepath.Join(root, filepath.FromSlash(defaultRuntimeSubdir)),
+		RuntimeDir: runtimeDir,
 		DaemonMode: mtkit.DaemonModeConfig{IdleTTLSeconds: 36},
 		ClientMode: mtkit.ClientModeConfig{
 			// 首跑要拉镜像 + 全量编译 SUT，会远超默认 60s；放宽到 300s 避免 client 提前超时取消就绪编排。
@@ -84,22 +75,4 @@ func Run(m *testing.M, resources ...fixture.Resource) int {
 		RegisterSUT(newSUTBootPlan(sutWorkDir(root))).
 		WithSchema(resources). // 持租约后、m.Run 前跨进程幂等执行一次
 		Run(m)
-}
-
-// repoRoot 从 CWD 向上找含 go.mod 的目录作为仓库根（集成测试恒从源码树运行）。
-func repoRoot() (string, error) {
-	dir, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir, nil
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return "", os.ErrNotExist
-		}
-		dir = parent
-	}
 }

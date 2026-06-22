@@ -13,15 +13,17 @@ import (
 	"sync"
 	"testing"
 
+	fake "github.com/McHarvvvy/mtkit/client/fake"
 	fixture "github.com/McHarvvvy/mtkit/client/fixture"
 	mtruntime "github.com/McHarvvvy/mtkit/runtime"
 
-	"shopdemo/test/bootstrap"
+	"shopdemo/test/contract"
 )
 
 var (
 	once       sync.Once
 	fxClient   *fixture.Client
+	fakeClient *fake.Client
 	persistEnv *fixture.PersistEnv
 	initErr    error
 )
@@ -29,7 +31,7 @@ var (
 // ensure 懒读 runtime 并构造进程级单例；任何一步失败记入 initErr，由 getter 转 t.Fatal。
 func ensure() {
 	once.Do(func() {
-		path, err := bootstrap.RuntimePath()
+		path, err := contract.RuntimePath()
 		if err != nil {
 			initErr = err
 			return
@@ -40,6 +42,7 @@ func ensure() {
 			return
 		}
 		fxClient = fixture.New(info.Addr, info.Token)
+		fakeClient = fake.New(info.Addr, info.Token) // 与 fixture 同一 daemon 地址/token
 		persistEnv = fixture.NewPersistEnv(info.SUTEnv)
 	})
 }
@@ -62,4 +65,14 @@ func Persist(t testing.TB) *fixture.PersistEnv {
 		t.Fatalf("harness: PersistEnv 不可用: %v", initErr)
 	}
 	return persistEnv
+}
+
+// Fake 返回进程级唯一的 fake.Client（用例据它给 fake gRPC/HTTP endpoint 注册 per-case 规则）。
+func Fake(t testing.TB) *fake.Client {
+	t.Helper()
+	ensure()
+	if initErr != nil {
+		t.Fatalf("harness: fake client 不可用: %v", initErr)
+	}
+	return fakeClient
 }

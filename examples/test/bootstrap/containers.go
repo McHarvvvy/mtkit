@@ -12,14 +12,12 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
+
+	"shopdemo/test/contract"
 )
 
-// SUTEnv 回调吐出的 env key 是 **bootstrap 与 SUT 消费侧的共享契约**：mtkit 据此把容器连接串注入 SUT，
-// 你项目的 schema/seeder 也据同一 key 经 PersistEnv 取连接。两边 key 必须逐字一致。
-const (
-	EnvKeyMySQLDSN  = "SHOP_IT_MYSQL_DSN"
-	EnvKeyRedisAddr = "SHOP_IT_REDIS_ADDR"
-)
+// SUTEnv 回调吐出的 env key 取自 contract（共享契约）：mtkit 据此把容器连接串注入 SUT，schema/seeder
+// 也据同一 key 经 PersistEnv 取连接。key 定义在 contract，两侧逐字一致。
 
 // registerDefaultContainers 声明玩具服务所需容器（mysql + redis）。
 // Init 钩子做“SUT 启动就依赖”的一次性初始化（建库）；测试用表放 provision（见 fixture/schema）。
@@ -49,7 +47,7 @@ func registerDefaultContainers(_ context.Context) ([]container.ContainerRegistra
 				}
 				dsn := fmt.Sprintf("root:pass@tcp(%s:%s)/shop?charset=utf8mb4&parseTime=True&loc=Local&multiStatements=true",
 					host, port)
-				return map[string]string{EnvKeyMySQLDSN: dsn}, nil
+				return map[string]string{contract.EnvKeyMySQLDSN: dsn}, nil
 			},
 		},
 		{
@@ -70,7 +68,7 @@ func registerDefaultContainers(_ context.Context) ([]container.ContainerRegistra
 				if err != nil {
 					return nil, err
 				}
-				return map[string]string{EnvKeyRedisAddr: fmt.Sprintf("%s:%s", host, port)}, nil
+				return map[string]string{contract.EnvKeyRedisAddr: fmt.Sprintf("%s:%s", host, port)}, nil
 			},
 		},
 	}, nil
@@ -114,7 +112,6 @@ func mappedHostPortByName(ctx context.Context, name, portRef string) (string, st
 	return "127.0.0.1", "3306", nil // 占位
 }
 
-// fixedHostPort 是“手动启动 SUT”模式的可选项：把容器端口写死（testcontainers 支持 HostConfigModifier
-// 绑定固定 HostPort），这样 SUT 配置文件可直接照抄固定地址、不必每次从 runtime 读。代价是失去“随机端口
-// 避免本地端口冲突”的好处，故仅手动模式按需采用。托管模式（run.go）保持随机端口最稳。
-var _ = fmt.Sprintf // 占位：示意骨架
+// 关于固定容器端口（手动启动 SUT 模式可选）：testcontainers 支持 HostConfigModifier 绑定固定 HostPort，
+// 这样 SUT 配置文件可直接照抄固定地址、不必每次从 runtime 读。代价是失去“随机端口避免本地端口冲突”的
+// 好处，故仅手动模式按需采用；托管模式（run.go）保持随机端口最稳。

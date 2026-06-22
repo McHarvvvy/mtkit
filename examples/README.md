@@ -21,6 +21,7 @@ examples/                          # 玩具工程根（module shopdemo）
 ├── cmd/shop/                      # 玩具 SUT：main.go 骨架 + mtkit_ca_addon.go（HTTPS faking 用）
 ├── schema/sql/                    # 根级“权威” DDL，provision 读盘原样执行
 └── test/                          # ← 测试代码都在这（搬到你项目即 <yourmodule>/test/）
+    ├── contract/                  # 最底层共享契约：env key、SUT 地址、runtime 路径
     ├── bootstrap/ fake/ fixture/ entry/
 ```
 
@@ -30,20 +31,21 @@ examples/                          # 玩具工程根（module shopdemo）
 | --- | --- | --- |
 | [`test/bootstrap/`](test/bootstrap/) | TestMain 接入 / SUT 两种启动方式 | `run.go` 托管 SUT；`run_manual.go` 手动启动 SUT；`containers.go` 容器+SUTEnv 契约；`sut.go` boot plan 与 workdir 钉死 |
 | [`schema/sql/`](schema/sql/) | 权威 schema | 玩具“权威” DDL，provision 读盘原样执行（别臆造 DDL） |
-| [`test/fake/grpc/`](test/fake/grpc/) | fake gRPC endpoint | 四步薄壳、无业务分支、route_key 取真实请求字段、`init()` 自注册 |
-| [`test/fake/http/`](test/fake/http/) | fake HTTP(S) endpoint + CA addon | `Host+Routes+GenRouteKey`；HTTPS faking 需把 [`addons/`](../addons/) 的 CA 插件拷进 SUT（见 `cmd/shop/`） |
-| [`test/fixture/harness/`](test/fixture/harness/) | lazy 单例引导 | `sync.Once` 懒读 runtime；进程级单例绝不在用例 cleanup Close |
-| [`test/fixture/schema/`](test/fixture/schema/) | provision 资源 | `funcResource` + 读权威 `.sql`；`Key()` 不可变、`Apply` 幂等；自带 repoRoot 破 import 环 |
+| [`test/fake/grpc/`](test/fake/grpc/) | fake gRPC endpoint | 四步薄壳、无业务分支、route_key 取真实请求字段、`init()` 自注册；**用例侧用法见 [`profile_fake_test.go`](test/entry/http/profile_fake_test.go)** |
+| [`test/fake/http/`](test/fake/http/) | fake HTTP(S) endpoint + CA addon | `Host+Routes+GenRouteKey`；HTTPS faking 需把 [`addons/`](../addons/) 的 CA 插件拷进 SUT（见 `cmd/shop/`）；**用例侧用法见 [`profile_fake_test.go`](test/entry/http/profile_fake_test.go)** |
+| [`test/contract/`](test/contract/) | 共享契约（最底层叶子） | env key、SUT 地址、runtime 路径集中一处；bootstrap 与各 fixture 包都依赖它，藉此打破反向依赖 |
+| [`test/fixture/harness/`](test/fixture/harness/) | lazy 单例引导 | `sync.Once` 懒读 runtime；`Fixture`/`Persist`/`Fake` 进程级单例，绝不在用例 cleanup Close |
+| [`test/fixture/schema/`](test/fixture/schema/) | provision 资源 | `funcResource` + 读权威 `.sql`；`Key()` 不可变、`Apply` 幂等 |
 | [`test/fixture/seeders/`](test/fixture/seeders/) | case 级造数 | seeder 不可重入：每调一次生成一组不冲突的新值；返回值要复用由调用者自存；只造数据 |
 | [`test/fixture/request/`](test/fixture/request/) | 请求 helper | 签名 / 网关身份注入 / 响应解析收敛一处；低耦合 |
 | [`test/fixture/peephole/`](test/fixture/peephole/) | 后门观察兜底 | 文档化空包：前门优先，后门万不得已才用 |
-| [`test/entry/http/`](test/entry/http/) | 黑盒用例 | 前门 set→get + 预读暴露缓存、可达状态、`t.Parallel`、只咬对外契约 |
+| [`test/entry/http/`](test/entry/http/) | 黑盒用例 | `profile_test.go` 前门 set→get + 预读暴露缓存；`profile_fake_test.go` fake gRPC/HTTP 用法；可达状态、`t.Parallel` |
 
 ## 依赖方向（无环）
 
-`bootstrap → fake/* + fixture/schema`；`harness → bootstrap`；`seeders/request → harness`；`entry → bootstrap + fixture/*`。
+`contract`（最底层共享契约）← 被所有人依赖；`bootstrap → contract + fake/*`；`harness/schema/seeders/request → contract`（seeders/request 另依赖 harness）；`entry → bootstrap + fixture/*`。
 
-`bootstrap` 是**顶层启动层**（blank-import `fake` 触发 endpoint 自注册），**`fake` / `schema` 一律不反向 import `bootstrap` 或用例**。这也是它叫 bootstrap 而非 infra 的原因——它依赖别人，不是被依赖的底座。
+`bootstrap` 是**顶层启动层**（blank-import `fake` 触发 endpoint 自注册），它依赖别人、只被 `entry` 依赖——所以叫 bootstrap 而非 infra（它不是被依赖的底座）。**叶子包要的共享值（env key、地址、路径）一律放进最底层的 `contract`，谁都不反向 import `bootstrap`**，依赖方向自上而下、无环。
 
 ## 两种 SUT 接入方式
 

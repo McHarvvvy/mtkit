@@ -1,8 +1,8 @@
 // Package schema 声明集成测试运行前需 provision 的资源（表 / 索引 / namespace / 只读种子）。
 //
 // 它只产出 mtkit 的 fixture.Resource 列表，由 bootstrap 经 kit.WithSchema 注册、框架在 m.Run 前
-// 跨进程幂等执行一次；本包不持连接、不读 runtime、**不 import bootstrap / harness**（避免成环，故自带
-// 一个最小 repoRoot）。每个存储域一个文件（shop.go / ...），集中该域的全部资源声明。
+// 跨进程幂等执行一次；本包不持连接、不读 runtime。env key、仓库根等共享值取自最底层的 contract 包
+// （**不反向 import bootstrap**，保持依赖自上而下）。每个存储域一个文件（shop.go / ...），集中该域的全部资源声明。
 //
 // 建表纪律（权威 schema 优先）：本玩具的“权威” DDL 在 examples/schema/sql/*.sql。provision 一律读这些
 // 权威 .sql **原样执行**，保证测试建表与生产 schema 零漂移；绝不在此手抄 / 臆造 DDL——臆造的宽松表会
@@ -18,7 +18,7 @@ import (
 
 	fixture "github.com/McHarvvvy/mtkit/client/fixture"
 
-	"shopdemo/test/bootstrap"
+	"shopdemo/test/contract"
 )
 
 // funcResource 是通用 Resource 实现：provision 语义全在 apply 闭包里。
@@ -51,7 +51,7 @@ func ProfilesTable() fixture.Resource {
 // provision 经 Registry.EnsureOnce 每 daemon 只执行一次、且容器每次全新。
 func applyAuthoritativeSQL(file string) func(ctx context.Context, env *fixture.PersistEnv) error {
 	return func(ctx context.Context, env *fixture.PersistEnv) error {
-		root, err := repoRoot()
+		root, err := contract.RepoRoot()
 		if err != nil {
 			return err
 		}
@@ -60,28 +60,10 @@ func applyAuthoritativeSQL(file string) func(ctx context.Context, env *fixture.P
 		if err != nil {
 			return fmt.Errorf("read authoritative schema %s: %w", path, err)
 		}
-		// 连接经 PersistEnv 据 SUTEnv 的 key 取（不是容器名）；key 与 bootstrap 注册时吐出的一致。
-		if _, err = env.MySQL(bootstrap.EnvKeyMySQLDSN).ExecContext(ctx, string(ddl)); err != nil {
+		// 连接经 PersistEnv 据 SUTEnv 的 key 取（不是容器名）；key 是 contract 里与 SUT 消费侧共享的契约。
+		if _, err = env.MySQL(contract.EnvKeyMySQLDSN).ExecContext(ctx, string(ddl)); err != nil {
 			return fmt.Errorf("apply authoritative schema %s: %w", file, err)
 		}
 		return nil
-	}
-}
-
-// repoRoot 自带最小实现以保持本包独立、无 import 环（provision 在 client 进程执行，CWD 在仓库内）。
-func repoRoot() (string, error) {
-	dir, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir, nil
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return "", fmt.Errorf("locate repo root: go.mod not found")
-		}
-		dir = parent
 	}
 }

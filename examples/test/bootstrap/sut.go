@@ -6,17 +6,8 @@ import (
 	"path/filepath"
 
 	mtkit "github.com/McHarvvvy/mtkit"
-)
 
-// SUT 服务端口是**项目侧的静态约定**，mtkit 的 runtime 不暴露它——某服务有几个端口、各是什么语义
-// 由项目决定，框架不替你猜。故集中定义在客户端侧单一来源：boot plan 的 ProbeAddrs（就绪探测）与
-// request helper 的基址都复用之。（这点反直觉：别去 runtime 里找“SUT 端口”，那不是 mtkit 的职责。）
-const (
-	sutHTTPAddr = "127.0.0.1:18080"
-	sutGRPCAddr = "127.0.0.1:18081"
-
-	// SUTHTTPBaseURL 供 request helper 拼接 endpoint 路径。
-	SUTHTTPBaseURL = "http://" + sutHTTPAddr
+	"shopdemo/test/contract"
 )
 
 // sutBootPlan 控制 SUT 进程的启动命令（仅托管模式 run.go 用）。
@@ -33,8 +24,9 @@ func newSUTBootPlan(workDir string) mtkit.SUTBootPlan {
 }
 
 // ProbeAddrs 返回就绪探测地址：mtkit 探到这些端口可连才判 SUT 就绪、放发租约。
+// 地址取自 contract（与 request helper 的基址同源）——SUT 端口是项目侧静态约定，mtkit runtime 不暴露它。
 func (p *sutBootPlan) ProbeAddrs() []string {
-	return []string{sutHTTPAddr, sutGRPCAddr}
+	return []string{contract.SUTHTTPAddr, contract.SUTGRPCAddr}
 }
 
 // Command 组装启动 SUT 的 *exec.Cmd。
