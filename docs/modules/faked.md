@@ -38,6 +38,8 @@ fake 的 endpoint **不在配置里枚举，而在代码里 `init()` 自注册**
 
 `Listen()` 为空视为开发期错误，拒绝启动。
 
+> **两种地址对接模式**（按依赖可混用）：上面是 **env 注入**——`Listen("127.0.0.1:0")` 随机端口 + `EnvKey()` 把实际地址注入 SUT，SUT 从 env 读。若 SUT 只认配置文件里写死的依赖地址、不读 env，则用 **配置静态端口**：`Listen()` 直接返回与 SUT 配置**逐字一致**的固定 `host:port`，SUT 按自己配置拨过来即命中（`EnvKey()` 注入仍发生但被 SUT 忽略，无害）。代价是放弃 `:0` 的随机避冲突。详见 [README §2「SUT 怎么发现依赖地址」](../../README.md)。
+
 ### 1.2 声明一个 fake endpoint（主扩展点）
 
 新增一个 fake 外部依赖 = 写一个 endpoint 文件、`init()` 自注册、项目 `TestMain` blank-import 触发。

@@ -1,11 +1,10 @@
-// Package grpc 是业务侧 fake gRPC endpoint 的自注册入口（你项目里的 test/fake/grpc）。
+// Package endpoint 是业务侧 fake gRPC endpoint 的自注册入口（你项目里的 test/fake/grpc/endpoint）。
 //
 // 每个外部 gRPC 服务一个文件，集中存放：endpoint 定义 + Methods 静态声明 + typed 薄壳。
 // init() 调 fakedgrpc.RegisterEndpoint 自注册到 package-level 列表，由 bootstrap blank-import 触发。
-// 本包只 import faked/grpc 与对应 pb 包，**禁止反向依赖 bootstrap / 用例 / 业务源码**。
-//
-// 包名故意与 google.golang.org/grpc 同名，调用方按约定 alias 为 fakedgrpc / googrpc。
-package grpc
+// 本包是**服务端叶子**：只 import faked/grpc 与对应 pb 包，**禁止反向依赖 bootstrap / 用例 / harness / 业务源码**。
+// 针对 endpoint 注册响应规则的客户端封装（如有复用需要）放同级 rule 包；规则不复用时直接在用例里 inline 注册。
+package endpoint
 
 import (
 	"context"

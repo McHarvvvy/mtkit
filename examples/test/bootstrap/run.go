@@ -21,8 +21,8 @@ import (
 
 	// fake endpoint 经各包 init() 自注册进内嵌 faked 引擎；daemon == 测试二进制（re-exec），
 	// 故 client 与 daemon 都要 blank-import 这些包，引擎才“看得见”这些 endpoint。
-	_ "shopdemo/test/fake/grpc"
-	_ "shopdemo/test/fake/http"
+	_ "shopdemo/test/fake/grpc/endpoint"
+	_ "shopdemo/test/fake/http/endpoint"
 )
 
 const projectName = "shopdemo"

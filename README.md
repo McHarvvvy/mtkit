@@ -2,6 +2,16 @@
 
 mtkit 是 Go 应用的**集成测试基础设施框架**：在 `TestMain` 一个入口里，把被测服务（SUT）需要的真实依赖环境（容器 / fake 外部依赖 / 唯一数据 / 前置数据）一次性备好再跑测试，并让多个测试包跨进程复用同一套环境。原理与内部结构见 [docs/architecture.md](docs/architecture.md)。
 
+**主要功能**
+
+- **一个 `TestMain` 入口编排全套环境**：容器 / fake 外部依赖 / 唯一数据 / 前置数据一次备好，再进 `m.Run()`。
+- **daemon / client 双角色自动分流**：多测试包跨进程**复用同一套环境**（租约 + 空闲回收），复跑可从分钟级降到秒级。
+- **容器编排**（基于 testcontainers）：声明式注册 + `Init` 一次性初始化钩子 + `SUTEnv` 把容器连接信息注入 SUT。
+- **SUT 接入两种方式**：mtkit 托管（编译 / 启动 / 探活 / 停止）或手动启动（断点调试）。
+- **内嵌 faked 假冒外部依赖**：fake gRPC 与 HTTP(S)（HTTPS 走 MITM + 动态 CA）；用例侧按 per-case `route_key` 注册响应规则，天然并发隔离。
+- **唯一数据 + 三层前置数据装配**：唯一值发号 + 容器 `Init` / provision / seeder 三层，跨进程幂等。
+- **产物集中可排查**：日志 / 二进制 / `runtime.json` / fake 调用日志全落在 `RuntimeDir` 下。
+
 > 本文只讲**推荐用法与注意事项**——你要做什么、不做会怎样。完整的落地骨架在 [examples/](examples/)（按主题分目录的参照代码），各模块原理在 [docs/modules/](docs/modules/)。
 
 ```bash
@@ -41,6 +51,20 @@ func TestMain(m *testing.M) {
 
 两种方式用例侧代码完全一致。参照 [examples/test/bootstrap/run.go](examples/test/bootstrap/run.go)（托管）与 [run_manual.go](examples/test/bootstrap/run_manual.go)（手动）。
 
+### SUT 怎么发现依赖地址：env 注入 vs 配置静态端口
+
+上表分的是「谁管 SUT 生命周期」；还有一个**正交维度**——SUT 怎么知道容器 / fake 的地址。按 SUT 自身能力二选一，且可**按依赖混用**：
+
+| 模式                  | 适用 SUT                       | mtkit 怎么配                                                                                                          | 端口                                                          |
+| --------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| **env 注入（动态）**  | 能从环境变量读依赖地址         | 容器 `SUTEnv` 回调吐连接串、fake endpoint 经 `EnvKey()` 上报；mtkit 注入进 SUT 进程 env，SUT 据此连                    | 监听 `127.0.0.1:0` 让 OS 随机分配，天然避冲突——本文其余默认这种 |
+| **配置静态端口**      | 只认配置文件写死的地址、改不了 | mtkit **参照 SUT 配置文件里的端口**，把容器发布端口、fake `Listen()` **钉死到与配置一致的固定地址**；无需注入 env（注入了 SUT 也不读，无害） | 固定端口，须与 SUT 配置逐字一致                                |
+
+- **可按依赖混用**：同一个 SUT，存储走 env 注入、某个 gRPC 依赖走配置静态端口，完全可以——取决于*该依赖的地址* SUT 是从 env 读还是从配置读。先把每个依赖各属哪种追清楚。
+- **配置静态端口的代价**：放弃了 `:0` 的随机端口避冲突；固定端口被残留进程占用时绑定会失败，依赖 daemon 独占端口 + 退出清理兜底。
+- **fake endpoint 切换方式**：`Listen()` 返回配置里的固定 `host:port`（而非 `:0`）即进入配置静态端口模式，SUT 按自己配置拨过来就命中。
+- **手动启动 SUT 天然契合配置静态端口**：手动起的 SUT 直接读自己的配置文件，mtkit 只要把容器 / fake 钉在配置端口上即可；env 注入在手动模式下反而不易传递。
+
 ---
 
 ## 3. 接入前提（先确认，否则白跑）
@@ -62,7 +86,11 @@ mtkit 对 SUT 有硬性前提；不满足时，第一个碰到的用例会以**�
 test/
 ├── contract/    # 最底层共享契约：env key、SUT 地址、runtime 路径（谁都依赖它、它不依赖谁）
 ├── bootstrap/   # 顶层启动层：TestMain 入口 Run、容器注册、SUT boot plan
-├── fake/        # 外部依赖 fake：grpc/ http/（每服务一文件，init() 自注册）
+├── fake/                      # 外部依赖 fake（按协议分 grpc/ http/）
+│   ├── grpc/
+│   │   ├── endpoint/          # 服务端：fake 薄壳 + init() 自注册（被 daemon blank-import；只依赖 faked/grpc + pb）
+│   │   └── rule/              # 客户端·可选：注册响应规则的复用封装（依赖 endpoint + harness + client/fake）
+│   └── http/                  # 同 grpc：endpoint/ +（可选）rule/
 ├── fixture/
 │   ├── harness/   # 进程级单例引导（懒读 runtime → fixture.Client / PersistEnv / fake.Client）
 │   ├── schema/    # provision 资源声明（一资源一函数）
@@ -72,7 +100,9 @@ test/
 └── entry/       # 入口黑盒测试：http/ grpc/ …（每包一个 TestMain）
 ```
 
-依赖方向自上而下、无环：`contract` 在最底、被各包依赖；`bootstrap → contract + fake/*`，且**只被 `entry` 依赖**；`harness/schema/seeders/request → contract`；`entry → bootstrap + fixture/*`。叶子包需要的共享值（env key、地址、路径）一律放进 `contract`，**不反向 import 顶层的 `bootstrap`**。
+依赖方向自上而下、无环：`contract` 在最底、被各包依赖；`bootstrap → contract + fake/<proto>/endpoint`（blank-import 触发自注册），且**只被 `entry` 依赖**；`harness/schema/seeders/request → contract`；`entry → bootstrap + fixture/*`。叶子包需要的共享值（env key、地址、路径）一律放进 `contract`，**不反向 import 顶层的 `bootstrap`**。
+
+`fake/` 内部分两类、依赖方向相反：`endpoint`（服务端 fake 薄壳）被 daemon blank-import，**只依赖 faked/\* + pb，不被任何客户端代码反向依赖**；`rule`（客户端规则注册封装）`→ 同协议 endpoint + harness + client/fake`，被 seeders / 用例调用。`rule` 是**进阶可选层**：规则不复用时直接在用例里 inline 注册即可。[examples/](examples/) 两种形态都示范——gRPC 侧把规则抽成了 `rule` 包，HTTP 侧规则用例内联。
 
 ---
 

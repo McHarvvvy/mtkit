@@ -1,15 +1,14 @@
-// Package http 是业务侧 fake HTTP(S) endpoint 的自注册入口（你项目里的 test/fake/http）。
+// Package endpoint 是业务侧 fake HTTP(S) endpoint 的自注册入口（你项目里的 test/fake/http/endpoint）。
 //
 // 每个外部 HTTP 服务一个文件：endpoint 定义（Host + Routes + 每路由的 RouteKey 提取函数）。
 // init() 调 fakedhttp.RegisterEndpoint 自注册，由 bootstrap blank-import 触发。
-// 本包只 import faked/http 与其 routekey/，**禁止反向依赖 bootstrap / 用例 / 业务源码**。
-//
-// 包名故意与 net/http 同名，调用方按约定 alias 为 fakedhttp / nethttp。
+// 本包是**服务端叶子**：只 import faked/http 与其 routekey/，**禁止反向依赖 bootstrap / 用例 / harness / 业务源码**。
+// 针对 endpoint 注册响应规则的客户端封装（如有复用需要）放同级 rule 包；规则不复用时直接在用例里 inline 注册。
 //
 // 关于 HTTPS：faked 对出站 HTTPS 做 MITM、用动态 CA 现签叶证书，**SUT 必须信任这张 CA 才能握手**。
 // 故凡要 fake HTTPS，SUT 的 main 包必须拷入 mtkit/addons/mtkit_ca_addon.go 并以 -tags mtkit_it 构建
 // （bootstrap/run.go 已加该 tag）。纯明文 HTTP / 纯 gRPC 不需要 CA 插件。
-package http
+package endpoint
 
 import (
 	nethttp "net/http"

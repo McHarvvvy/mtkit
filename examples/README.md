@@ -17,7 +17,7 @@
 ```
 examples/                          # 玩具工程根（module shopdemo）
 ├── go.mod                         # module shopdemo; replace mtkit => ../
-├── api/loyaltypb/                 # 你项目的 proto：fake/grpc 与 SUT 都 import 它
+├── api/loyaltypb/                 # 你项目的 proto：fake/grpc/endpoint 与 SUT 都 import 它
 ├── cmd/shop/                      # 玩具 SUT：main.go 骨架 + mtkit_ca_addon.go（HTTPS faking 用）
 ├── schema/sql/                    # 根级“权威” DDL，provision 读盘原样执行
 └── test/                          # ← 测试代码都在这（搬到你项目即 <yourmodule>/test/）
@@ -31,8 +31,9 @@ examples/                          # 玩具工程根（module shopdemo）
 | --- | --- | --- |
 | [`test/bootstrap/`](test/bootstrap/) | TestMain 接入 / SUT 两种启动方式 | `run.go` 托管 SUT；`run_manual.go` 手动启动 SUT；`containers.go` 容器+SUTEnv 契约；`sut.go` boot plan 与 workdir 钉死 |
 | [`schema/sql/`](schema/sql/) | 权威 schema | 玩具“权威” DDL，provision 读盘原样执行（别臆造 DDL） |
-| [`test/fake/grpc/`](test/fake/grpc/) | fake gRPC endpoint | 四步薄壳、无业务分支、route_key 取真实请求字段、`init()` 自注册；**用例侧用法见 [`profile_fake_test.go`](test/entry/http/profile_fake_test.go)** |
-| [`test/fake/http/`](test/fake/http/) | fake HTTP(S) endpoint + CA addon | `Host+Routes+GenRouteKey`；HTTPS faking 需把 [`addons/`](../addons/) 的 CA 插件拷进 SUT（见 `cmd/shop/`）；**用例侧用法见 [`profile_fake_test.go`](test/entry/http/profile_fake_test.go)** |
+| [`test/fake/grpc/endpoint/`](test/fake/grpc/endpoint/) | fake gRPC endpoint（服务端） | 四步薄壳、无业务分支、route_key 取真实请求字段、`init()` 自注册；**用例侧用法见 [`profile_fake_test.go`](test/entry/http/profile_fake_test.go)** |
+| [`test/fake/http/endpoint/`](test/fake/http/endpoint/) | fake HTTP(S) endpoint + CA addon | `Host+Routes+GenRouteKey`；HTTPS faking 需把 [`addons/`](../addons/) 的 CA 插件拷进 SUT（见 `cmd/shop/`）；**用例侧用法见 [`profile_fake_test.go`](test/entry/http/profile_fake_test.go)** |
+| [`test/fake/grpc/rule/`](test/fake/grpc/rule/) | fake 规则注册封装（客户端·可选） | `StubLoyaltyPoints` 把 gRPC 规则注册收成可复用 helper；依赖 endpoint + harness + client/fake。HTTP 侧未抽、规则用例内联作对照——两种形态都覆盖 |
 | [`test/contract/`](test/contract/) | 共享契约（最底层叶子） | env key、SUT 地址、runtime 路径集中一处；bootstrap 与各 fixture 包都依赖它，藉此打破反向依赖 |
 | [`test/fixture/harness/`](test/fixture/harness/) | lazy 单例引导 | `sync.Once` 懒读 runtime；`Fixture`/`Persist`/`Fake` 进程级单例，绝不在用例 cleanup Close |
 | [`test/fixture/schema/`](test/fixture/schema/) | provision 资源 | `funcResource` + 读权威 `.sql`；`Key()` 不可变、`Apply` 幂等 |
@@ -43,9 +44,11 @@ examples/                          # 玩具工程根（module shopdemo）
 
 ## 依赖方向（无环）
 
-`contract`（最底层共享契约）← 被所有人依赖；`bootstrap → contract + fake/*`；`harness/schema/seeders/request → contract`（seeders/request 另依赖 harness）；`entry → bootstrap + fixture/*`。
+`contract`（最底层共享契约）← 被所有人依赖；`bootstrap → contract + fake/<proto>/endpoint`；`harness/schema/seeders/request → contract`（seeders/request 另依赖 harness）；`fake/grpc/rule → endpoint + harness + client/fake`；`entry → bootstrap + fixture/* + fake/grpc/rule`。
 
-`bootstrap` 是**顶层启动层**（blank-import `fake` 触发 endpoint 自注册），它依赖别人、只被 `entry` 依赖——所以叫 bootstrap 而非 infra（它不是被依赖的底座）。**叶子包要的共享值（env key、地址、路径）一律放进最底层的 `contract`，谁都不反向 import `bootstrap`**，依赖方向自上而下、无环。
+`bootstrap` 是**顶层启动层**（blank-import `fake/grpc/endpoint`、`fake/http/endpoint` 触发 endpoint 自注册），它依赖别人、只被 `entry` 依赖——所以叫 bootstrap 而非 infra（它不是被依赖的底座）。**叶子包要的共享值（env key、地址、路径）一律放进最底层的 `contract`，谁都不反向 import `bootstrap`**，依赖方向自上而下、无环。
+
+> fake 分两类、依赖方向相反：服务端 `endpoint`（fake 薄壳，被 daemon blank-import，只依赖 faked + pb）与客户端规则注册封装。本示例**两种注册形态都覆盖**：gRPC 侧把规则抽成 `fake/grpc/rule`（`StubLoyaltyPoints`，可复用）；HTTP 侧规则直接在用例里 inline 注册（最小形态）。按「规则是否要复用」二选一，见 [README §4](../README.md)。
 
 ## 两种 SUT 接入方式
 
