@@ -42,17 +42,17 @@ func getNickname(t *testing.T, a *seeders.Account) profile {
 //	而沉默通过。断言对 seeder 返回对象 / set 的入参，不写裸字面值。
 func TestHTTP_Profile_SetThenGet(t *testing.T) {
 	t.Parallel()
-	// seeder 每次都生成一个不冲突的新账号；并发用例数据互不相交，故可放心 t.Parallel。
-	user := seeders.SeedAccount(t, seeders.WithNickname("old-name"))
+	// recipe 组合「账号 + 资料」两个实体；seeder 每次都生成一组不冲突的新数据，故可放心 t.Parallel。
+	user := seeders.SeedAccountWithProfile(t, seeders.WithNickname("old-name"))
 
-	before := getNickname(t, user) // 预读：把旧值灌入读穿缓存
-	require.Equal(t, user.Nickname, before.Nickname, "预读应等于 seed 的初始昵称")
+	before := getNickname(t, user.Account) // 预读：把旧值灌入读穿缓存
+	require.Equal(t, user.Profile.Nickname, before.Nickname, "预读应等于 seed 的初始昵称")
 
 	const newName = "new-name"
-	resp := setNickname(t, user, newName)
+	resp := setNickname(t, user.Account, newName)
 	require.True(t, resp.IsSuccess(), "更新昵称应成功: apiStatus=%d info=%s", resp.ApiStatus, resp.Info)
 
-	after := getNickname(t, user)
+	after := getNickname(t, user.Account)
 	require.Equal(t, newName, after.Nickname, "改名后再读应为新值（含缓存已失效）")
 }
 
@@ -61,7 +61,8 @@ func TestHTTP_Profile_SetThenGet(t *testing.T) {
 // 验证手段：只分配登录身份、不 seed profiles 行 → getNickname → 断言返回默认昵称。
 func TestHTTP_Profile_FreshUserReturnsDefault(t *testing.T) {
 	t.Parallel()
-	user := seeders.FreshAccount(t) // 有账号、无 profiles 行——这是真实可达状态
+	// 只造账号、不 seed 资料行：SeedAccount 单实体即「有账号、无 profiles 行」——这是真实可达状态。
+	user := seeders.SeedAccount(t)
 	got := getNickname(t, user)
 	require.Equal(t, "guest", got.Nickname, "无资料行时应返回系统默认昵称")
 }

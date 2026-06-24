@@ -92,11 +92,11 @@ func NewSequenceResponse(newResp func() proto.Message, data json.RawMessage) (*S
 	}
 	bytes := make([][]byte, 0, len(d.Responses))
 	for i, r := range d.Responses {
-		if r.Resp == "" {
-			// 缺/空必填字段属 schema 不符 → invalid_action_data（与 static/once 一致）。
+		if r.Resp == nil {
+			// 某元素 resp 缺失（{}）→ invalid_action_data；{"resp":""} 空值合法（全零 proto 的编码）。与 static/once 一致。
 			return nil, protocol.NewError(protocol.ErrCodeInvalidActionData, "missing resp at index %d", i)
 		}
-		raw, err := decodeRespBase64(r.Resp)
+		raw, err := decodeRespBase64(*r.Resp)
 		if err != nil {
 			return nil, protocol.NewError(protocol.ErrCodeInvalidResp, "index %d: %v", i, err)
 		}

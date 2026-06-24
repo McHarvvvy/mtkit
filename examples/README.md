@@ -37,7 +37,7 @@ examples/                          # 玩具工程根（module shopdemo）
 | [`test/contract/`](test/contract/) | 共享契约（最底层叶子） | env key、SUT 地址、runtime 路径集中一处；bootstrap 与各 fixture 包都依赖它，藉此打破反向依赖 |
 | [`test/fixture/harness/`](test/fixture/harness/) | lazy 单例引导 | `sync.Once` 懒读 runtime；`Fixture`/`Persist`/`Fake` 进程级单例，绝不在用例 cleanup Close |
 | [`test/fixture/schema/`](test/fixture/schema/) | provision 资源 | `funcResource` + 读权威 `.sql`；`Key()` 不可变、`Apply` 幂等 |
-| [`test/fixture/seeders/`](test/fixture/seeders/) | case 级造数 | seeder 不可重入：每调一次生成一组不冲突的新值；返回值要复用由调用者自存；只造数据 |
+| [`test/fixture/seeders/`](test/fixture/seeders/) | case 级造数 | 一个 seeder 一个实体（`seeder_account.go`/`seeder_profile.go`），多实体组合走 `recipe_*`（`SeedAccountWithProfile`，名字看得出组合）；seeder 不可重入、每调一次生成不冲突新值、返回值要复用由调用者自存；只造数据 |
 | [`test/fixture/request/`](test/fixture/request/) | 请求 helper | 签名 / 网关身份注入 / 响应解析收敛一处；低耦合 |
 | [`test/fixture/peephole/`](test/fixture/peephole/) | 后门观察兜底 | 文档化空包：前门优先，后门万不得已才用 |
 | [`test/entry/http/`](test/entry/http/) | 黑盒用例 | `profile_test.go` 前门 set→get + 预读暴露缓存；`profile_fake_test.go` fake gRPC/HTTP 用法；可达状态、`t.Parallel` |

@@ -19,7 +19,7 @@ type Config struct {
 	// RuntimeDir 是 faked 写动态 CA 等私有产物的目录（约定 <mtkit.runtime_dir>/faked）。
 	RuntimeDir string
 
-	// CallLogDir 是 faked 写调用日志（{grpc,http}_calls.jsonl）的目录。
+	// CallLogDir 是 faked 写调用日志（faked_{grpc,http}_calls.jsonl）的目录。
 	// 调用日志是排查用的可观察证据，与 daemon.log / app.log 同属诊断流，故统一汇聚到
 	// <mtkit.runtime_dir>/logs；动态 CA 是凭据、性质不同，仍留在 RuntimeDir。
 	// 留空时回退到 RuntimeDir，保证独立构造 Config 的单测/旧用法行为不变。

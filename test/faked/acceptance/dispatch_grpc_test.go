@@ -16,7 +16,7 @@ import (
 //
 //	(a) control 注册返回 200（builder.Apply 内部包装：失败即 t.Fatal）
 //	(b) 真实 grpc.Dial 调 Echo.Ping → 响应字段与注册值逐字段相等
-//	(c) grpc_calls.jsonl 中存在一行 matched==true、route_key==本用例 key、
+//	(c) faked_grpc_calls.jsonl 中存在一行 matched==true、route_key==本用例 key、
 //	    action_kind==static_response（按 key 归因，共用 daemon 下不污染）
 func TestDispatch_GRPCStaticHappy(t *testing.T) {
 	t.Parallel()

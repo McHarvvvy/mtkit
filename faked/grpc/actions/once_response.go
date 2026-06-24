@@ -47,11 +47,11 @@ func NewOnceResponse(newResp func() proto.Message, data json.RawMessage) (*OnceR
 	if err := json.Unmarshal(data, &d); err != nil {
 		return nil, protocol.NewError(protocol.ErrCodeInvalidActionData, "unmarshal once_response data: %v", err)
 	}
-	if d.Resp == "" {
-		// 缺/空必填字段属 schema 不符 → invalid_action_data（与 static/sequence 一致）。
+	if d.Resp == nil {
+		// {} 缺失 → invalid_action_data；{"resp":""} 空值合法（全零 proto 的编码）。与 static/sequence 一致。
 		return nil, protocol.NewError(protocol.ErrCodeInvalidActionData, "once_response missing resp")
 	}
-	raw, err := decodeRespBase64(d.Resp)
+	raw, err := decodeRespBase64(*d.Resp)
 	if err != nil {
 		return nil, err
 	}

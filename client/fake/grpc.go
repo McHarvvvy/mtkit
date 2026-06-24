@@ -125,7 +125,7 @@ func (b *grpcSequenceBuilder) Add(resp proto.Message) *grpcSequenceBuilder {
 		b.addErr(wrapErr("encode sequence_response", err))
 		return b
 	}
-	b.responses = append(b.responses, grpcproto.StaticResponseData{Resp: encoded})
+	b.responses = append(b.responses, grpcproto.StaticResponseData{Resp: &encoded})
 	return b
 }
 
@@ -200,7 +200,7 @@ func (b *grpcOnceBuilder) Apply(t testing.TB) {
 		t.Fatalf("faked client: once_response needs second-call behavior; call ThenError")
 	}
 	data, err := json.Marshal(grpcproto.OnceResponseData{
-		Resp:         b.resp,
+		Resp:         &b.resp,
 		OnSecondCall: b.onSecondCall,
 	})
 	if err != nil {
@@ -248,7 +248,7 @@ func encodeStaticResponseData(resp proto.Message) (json.RawMessage, error) {
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(grpcproto.StaticResponseData{Resp: encoded})
+	return json.Marshal(grpcproto.StaticResponseData{Resp: &encoded})
 }
 
 // marshalAndEncode 是 proto.Marshal + base64.Std 的合并：测试侧统一编码入口，

@@ -4,12 +4,12 @@ mtkit 是 Go 应用的**集成测试基础设施框架**：在 `TestMain` 一个
 
 **主要功能**
 
-- **一个 `TestMain` 入口编排全套环境**：容器 / fake 外部依赖 / 唯一数据 / 前置数据一次备好，再进 `m.Run()`。
-- **daemon / client 双角色自动分流**：多测试包跨进程**复用同一套环境**（租约 + 空闲回收），复跑可从分钟级降到秒级。
-- **容器编排**（基于 testcontainers）：声明式注册 + `Init` 一次性初始化钩子 + `SUTEnv` 把容器连接信息注入 SUT。
-- **SUT 接入两种方式**：mtkit 托管（编译 / 启动 / 探活 / 停止）或手动启动（断点调试）。
-- **内嵌 faked 假冒外部依赖**：fake gRPC 与 HTTP(S)（HTTPS 走 MITM + 动态 CA）；用例侧按 per-case `route_key` 注册响应规则，天然并发隔离。
-- **唯一数据 + 三层前置数据装配**：唯一值发号 + 容器 `Init` / provision / seeder 三层，跨进程幂等。
+- **`TestMain` 编排全套环境**：只需要 go test 命令就能启动全套功能，容器 / fake 外部依赖 / 唯一数据 / 前置数据一次备好，再进 `m.Run()`。
+- **daemon 环境复用性**：租约 TTL + 空闲回收控制环境存在时间，支持多 test 包并行运行，也可支持同一个 test 包反复重跑，重跑可从分钟级降到秒级。
+- **支持容器编排**：支持完全基于 testcontainers 的自定义容器的编排
+- **支持 SUT 托管**：mtkit 可以负责对 SUT 的编译 / 启动 / 探活 / 停止。支持动态注入环境变量，也支持静态端口配置，还能支持手动启动 SUT。
+- **内嵌 fake server**：支持 gRPC 与 HTTP(S)（HTTPS 走 MITM + 动态 CA）；编译期静态注册 endpoint；运行期，用例侧按 per-case `route_key` 注册响应规则，天然并发隔离。
+- **并发测试隔离性**：中心化跨进程唯一值发号机制，保证每个用例产生的测试数据不冲突，支持多进程并发测试和多用例并发测试 + 容器 `Init` / provision / seeder 三层，跨进程幂等。
 - **产物集中可排查**：日志 / 二进制 / `runtime.json` / fake 调用日志全落在 `RuntimeDir` 下。
 
 > 本文只讲**推荐用法与注意事项**——你要做什么、不做会怎样。完整的落地骨架在 [examples/](examples/)（按主题分目录的参照代码），各模块原理在 [docs/modules/](docs/modules/)。
@@ -55,10 +55,10 @@ func TestMain(m *testing.M) {
 
 上表分的是「谁管 SUT 生命周期」；还有一个**正交维度**——SUT 怎么知道容器 / fake 的地址。按 SUT 自身能力二选一，且可**按依赖混用**：
 
-| 模式                  | 适用 SUT                       | mtkit 怎么配                                                                                                          | 端口                                                          |
-| --------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| **env 注入（动态）**  | 能从环境变量读依赖地址         | 容器 `SUTEnv` 回调吐连接串、fake endpoint 经 `EnvKey()` 上报；mtkit 注入进 SUT 进程 env，SUT 据此连                    | 监听 `127.0.0.1:0` 让 OS 随机分配，天然避冲突——本文其余默认这种 |
-| **配置静态端口**      | 只认配置文件写死的地址、改不了 | mtkit **参照 SUT 配置文件里的端口**，把容器发布端口、fake `Listen()` **钉死到与配置一致的固定地址**；无需注入 env（注入了 SUT 也不读，无害） | 固定端口，须与 SUT 配置逐字一致                                |
+| 模式                 | 适用 SUT                       | mtkit 怎么配                                                                                                                                 | 端口                                                            |
+| -------------------- | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| **env 注入（动态）** | 能从环境变量读依赖地址         | 容器 `SUTEnv` 回调吐连接串、fake endpoint 经 `EnvKey()` 上报；mtkit 注入进 SUT 进程 env，SUT 据此连                                          | 监听 `127.0.0.1:0` 让 OS 随机分配，天然避冲突——本文其余默认这种 |
+| **配置静态端口**     | 只认配置文件写死的地址、改不了 | mtkit **参照 SUT 配置文件里的端口**，把容器发布端口、fake `Listen()` **钉死到与配置一致的固定地址**；无需注入 env（注入了 SUT 也不读，无害） | 固定端口，须与 SUT 配置逐字一致                                 |
 
 - **可按依赖混用**：同一个 SUT，存储走 env 注入、某个 gRPC 依赖走配置静态端口，完全可以——取决于*该依赖的地址* SUT 是从 env 读还是从配置读。先把每个依赖各属哪种追清楚。
 - **配置静态端口的代价**：放弃了 `:0` 的随机端口避冲突；固定端口被残留进程占用时绑定会失败，依赖 daemon 独占端口 + 退出清理兜底。
@@ -94,7 +94,7 @@ test/
 ├── fixture/
 │   ├── harness/   # 进程级单例引导（懒读 runtime → fixture.Client / PersistEnv / fake.Client）
 │   ├── schema/    # provision 资源声明（一资源一函数）
-│   ├── seeders/   # case 级造数（只做 Given）
+│   ├── seeders/   # case 级造数：seeder_* 单实体 / recipe_* 多实体组合（只做 Given）
 │   ├── request/   # 请求 helper（签名 / 身份注入 / 响应解析）
 │   └── peephole/  # 后门观察兜底（尽量少用）
 └── entry/       # 入口黑盒测试：http/ grpc/ …（每包一个 TestMain）
@@ -116,7 +116,11 @@ test/
 
 - **provision 读权威 schema 原样执行，别臆造 DDL。** 建表前先找权威 schema 定义，有则原样读盘执行——臆造的宽松表会丢掉生产真实约束（唯一键、定长字段），让测试「对着错的表」绿、却在生产炸。`Resource.Key()` 一经确定不可改（改了等于换标识 → 重复 `Apply`），`Apply` 必须幂等可重入。见 [examples/test/fixture/schema](examples/test/fixture/schema/shop.go)。
 
+- **一个 seeder 只造一个实体，别把多张表揉进一个 seeder。** seeder 的粒度是单个数据实体（一张表 / 一个强内聚聚合）：底层是两张表（如账号主表 + 资料 / 属性表）就写两个 seeder、两个返回 struct，别焊成一个。揉在一起会丢掉「按需各自组合」的弹性——想只造其中一个、或换一种组合的用例被堵死，无关字段还被迫挤进同一对象。子实体 seeder 显式收下父实体标识（如 accountID）作入参：数据要挂到某个具体实体上才有意义。
+
 - **seeder 不可重入，返回值要复用须自存。** seeder 每次调用都生成一组框架保证互不冲突的新值 / 新记录，可被多个用例复用；但它**不记忆**——之后还要用这些值（id/guid/email…），得由调用方自己存下它返回的对象。seeder 只负责造数据，不声明 schema、不发请求、不断言。见 [examples/test/fixture/seeders](examples/test/fixture/seeders/seeder_account.go)。
+
+- **多实体的高频组合用 recipe 封装，名字要看得出组合了什么。** 把「父实体 + 子实体」这类常见组合收进 recipe（`recipe_*`，内部调多个 seeder、不复制插表逻辑，返回含后续请求 / 观察所需实体的场景对象）。recipe 名**必须表达它组合 / 编码的场景语义**，别用一个看不出组合的单实体名把「其实还造了别的表」藏起来——叫 `SeedAccountWithProfile`，别叫 `SeedAccount`（后者是只造账号的单实体 seeder）。读者只读 recipe 名 + option 就该能复原这个 Given 造了哪些实体。见 [examples/test/fixture/seeders](examples/test/fixture/seeders/)。
 
 - **fake 规则必须带 per-case route_key。** gRPC 写 typed 薄壳严守「四步法」（收 typed 请求 → 取 route_key → 建 response 容器 → 调 `Engine.HandleUnary`，**不写业务分支**）。用例注册规则时的 route_key **必须等于 SUT 出站请求里那个字段的实际值**（如 account_id / guid / query 参数）——引擎据此把「本用例的规则」与「SUT 真实发出的调用」精确配对。用 seeder 造的每用例唯一字段当 route_key：既保证命中、又天然隔离并发用例。route_key 为空时引擎直接报错、不会悄悄放行。endpoint 经 `init()` 自注册，TestMain blank-import 让 daemon 可见。endpoint 声明见 [examples/test/fake](examples/test/fake/)，用例侧注册/断言见 [profile_fake_test.go](examples/test/entry/http/profile_fake_test.go)、[docs/modules/faked.md](docs/modules/faked.md)。
 
@@ -153,7 +157,7 @@ test/
 | ---------------------------- | --------------------------------------------------------------------------------- |
 | 用例报莫名业务错误码         | `logs/app.log`（SUT 真实堆栈：nil RPC client、缺表等）                            |
 | daemon 起不来 / acquire 超时 | `logs/daemon.log` + `docker ps`（容器是否就绪）                                   |
-| fake 没命中                  | `logs/{grpc,http}_calls.jsonl`（`matched=false` 即漏注册规则 / route_key 不匹配） |
+| fake 没命中                  | `logs/faked_{grpc,http}_calls.jsonl`（`matched=false` 即漏注册规则 / route_key 不匹配） |
 | 连接信息对不上               | `mtkit.runtime.json` 的 `sut_env`（mtkit 实际注入 SUT 的 env 全集）               |
 | HTTPS 握手失败               | 确认 CA 插件已拷入 SUT main 包、构建带 `-tags mtkit_it`                           |
 

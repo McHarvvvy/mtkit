@@ -44,7 +44,7 @@ func NewStaticResponse(newResp func() proto.Message, data json.RawMessage) (*Sta
 	if err != nil {
 		return nil, err
 	}
-	raw, err := decodeRespBase64(d.Resp)
+	raw, err := decodeRespBase64(*d.Resp)
 	if err != nil {
 		return nil, err
 	}
@@ -59,9 +59,10 @@ func decodeStaticResponseData(data json.RawMessage) (protocol.StaticResponseData
 	if err := json.Unmarshal(data, &d); err != nil {
 		return d, protocol.NewError(protocol.ErrCodeInvalidActionData, "unmarshal static_response data: %v", err)
 	}
-	if d.Resp == "" {
-		// 缺/空必填字段属 schema 不符 → invalid_action_data；invalid_resp 仅留给
-		// "resp 存在但 base64/unmarshal 失败"。
+	if d.Resp == nil {
+		// {} → resp 字段缺失 → invalid_action_data。
+		// 区别于 {"resp":""}（字段在、值空）：那是全零 proto 的合法编码，放行后走 base64 decode + unmarshal。
+		// invalid_resp 仅留给 "resp 存在但 base64/unmarshal 失败"。
 		return d, protocol.NewError(protocol.ErrCodeInvalidActionData, "static_response missing resp")
 	}
 	return d, nil

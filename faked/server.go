@@ -23,9 +23,10 @@ import (
 )
 
 // 调用日志文件名：落在 cfg.CallLogDir 下，按约定派生、不可配。
+// faked_ 前缀标明这是 faked 引擎产生的日志，与同目录的 daemon.log / app.log 区分来源。
 const (
-	grpcCallLogFileName = "grpc_calls.jsonl"
-	httpCallLogFileName = "http_calls.jsonl"
+	grpcCallLogFileName = "faked_grpc_calls.jsonl"
+	httpCallLogFileName = "faked_http_calls.jsonl"
 )
 
 // Addrs 是 Start 后 faked 数据面的对外地址，供 orchestrator 写入 runtime / 注入 SUT。

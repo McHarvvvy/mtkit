@@ -28,7 +28,7 @@ func TestRegisterInvalid_GRPC(t *testing.T) {
 	// 合法 echo PingRes 的 base64 protobuf 字节——作为"合法字段"基线，隔离单一字段的非法性。
 	validRespB64 := mustEncodeProto(t, &testpb.PingRes{Code: 1})
 	staticData := func(respB64 string) json.RawMessage {
-		return jsonRaw(t, grpcproto.StaticResponseData{Resp: respB64})
+		return jsonRaw(t, grpcproto.StaticResponseData{Resp: &respB64})
 	}
 
 	cases := []struct {
@@ -213,13 +213,14 @@ func TestRegisterInvalid_DuplicateRule(t *testing.T) {
 		Apply(t)
 
 	// 第二次注册同 RuleKey、不同 response，期望 409 duplicate_rule。
+	secondB64 := mustEncodeProto(t, second)
 	dupRule := grpcproto.Rule{
 		Endpoint:   testendpoint.EndpointEcho,
 		FullMethod: testpb.Echo_Ping_FullMethodName,
 		RouteKey:   key,
 		Action: grpcproto.Action{
 			Kind: grpcproto.ActionKindStaticResponse,
-			Data: jsonRaw(t, grpcproto.StaticResponseData{Resp: mustEncodeProto(t, second)}),
+			Data: jsonRaw(t, grpcproto.StaticResponseData{Resp: &secondB64}),
 		},
 	}
 	err := h.client.GRPC().RegisterRule(context.Background(), dupRule)
@@ -235,5 +236,34 @@ func TestRegisterInvalid_DuplicateRule(t *testing.T) {
 	}
 	if got.GetCode() != first.Code || got.GetMsg() != first.Msg {
 		t.Fatalf("expected first response, got %v", got)
+	}
+}
+
+// TestRegisterEmptyProtoResponse_GRPC 锁定"全零 proto 响应可注册并回放"的契约。
+//
+// proto3 省略零值字段，一个全零 response（&PingRes{}）marshal 出 0 字节、base64 后为空串。
+// 注册信封因此是 {"resp":""}——resp 字段存在但值为空。它必须被接受（区别于 resp 字段缺失的 {}，
+// 后者在 TestRegisterInvalid_GRPC/invalid-action-data 仍被拒）。走 fluent client 是真实注册路径，
+// Apply 内部失败即 t.Fatal，故"未 fatal"即代表注册成功；再发一次请求验证命中回放出全零消息。
+func TestRegisterEmptyProtoResponse_GRPC(t *testing.T) {
+	t.Parallel()
+	h := sharedHarness(t)
+	key := caseKey(t)
+
+	h.client.GRPC().
+		On(testendpoint.EndpointEcho, testpb.Echo_Ping_FullMethodName).
+		RouteKey(key).
+		Static(&testpb.PingRes{}). // 全零 → 空字节 → {"resp":""}
+		Apply(t)
+
+	echo := h.dialEcho(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	got, err := echo.Ping(ctx, &testpb.PingReq{Key: key})
+	if err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+	if got.GetCode() != 0 || got.GetMsg() != "" {
+		t.Fatalf("expected all-zero PingRes, got %v", got)
 	}
 }

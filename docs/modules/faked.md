@@ -164,9 +164,18 @@ daemon 启动时 `BuildMethodRegistry` / `BuildRouteRegistry` 会做一致性校
 
 gRPC response 以 `proto.Marshal` + base64 编码传输；HTTP response 的 body 同样 base64。
 
+> **全零 proto response 合法。** proto3 不编码零值字段，`&Resp{Code:0}` marshal 出 0 字节、base64 为空串，注册数据即 `{"resp":""}`。注册校验按 resp 字段是否存在区分:
+>
+> | 注册 data | 含义 | 结果 |
+> | --- | --- | --- |
+> | `{"resp":""}` | resp 字段在、值为空（全零响应的编码） | ✅ 注册成功 |
+> | `{}` | resp 字段缺失 | ❌ `invalid_action_data` |
+>
+> 故 `StaticResponseData.Resp` / `OnceResponseData.Resp` 用 `*string`：`nil` 才是「缺失」，空串是合法值。用 `string` 会把空值与缺失混为一谈，误拒全零响应。
+
 ### 5.1 调用日志
 
-两侧引擎都把命中/未命中事件写 **JSONL**（`grpc_calls.jsonl` / `http_calls.jsonl`，落 `<runtime_dir>/logs/`，与 daemon.log / app.log 同处）。每条含 endpoint、method、route_key、`matched`、`action_kind`、（HTTP 还有 `status`）、未命中时的 `error`。这是「SUT 到底调没调、调了什么」的可观察证据。
+两侧引擎都把命中/未命中事件写 **JSONL**（`faked_grpc_calls.jsonl` / `faked_http_calls.jsonl`，`faked_` 前缀标明出自 faked 引擎；落 `<runtime_dir>/logs/`，与 daemon.log / app.log 同处）。每条含 endpoint、method、route_key、`matched`、`action_kind`、（HTTP 还有 `status`）、未命中时的 `error`。这是「SUT 到底调没调、调了什么」的可观察证据。
 
 ---
 

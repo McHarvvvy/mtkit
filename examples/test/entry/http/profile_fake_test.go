@@ -32,7 +32,7 @@ import (
 // SUT 的 getProfile 内部调外部 loyalty.GetPoints 取积分——用 fake 让它返回固定值，断言出现在响应里。
 func TestHTTP_Profile_GetProfile_FakesLoyaltyPoints(t *testing.T) {
 	t.Parallel()
-	user := seeders.SeedAccount(t, seeders.WithNickname("alice"))
+	user := seeders.SeedAccountWithProfile(t, seeders.WithNickname("alice"))
 
 	const wantPoints int64 = 4321
 	// 经 rule 包的复用封装注册（route_key = account id，每用例唯一）——演示「规则抽成 rule 包」的形态。
@@ -46,7 +46,7 @@ func TestHTTP_Profile_GetProfile_FakesLoyaltyPoints(t *testing.T) {
 		Points   int64  `json:"points"`
 	}
 	resp.DecodeData(t, &got)
-	require.Equal(t, user.Nickname, got.Nickname, "昵称应为 seed 值")
+	require.Equal(t, user.Profile.Nickname, got.Nickname, "昵称应为 seed 值")
 	require.Equal(t, wantPoints, got.Points, "积分应来自被 fake 接管的 loyalty 出站调用")
 }
 
