@@ -195,7 +195,8 @@ slice 顺序即执行顺序（`Provision` 顺序遍历），故"建库"排"建�
 **注意事项**：
 - **`Key()` 一旦确定不可再改**——改了等于换标识，旧账本条目永不命中，会触发重复 `Apply`。
 - **`Apply` 必须幂等可重入**：用 `IF NOT EXISTS` / 容忍"已存在"错误 / list-then-create；多条写入须用**事务**包装，失败回滚后 key 未标记、下次可安全重入。
-- 连接失败一律 **fail-loud panic**（Pulsar 除外，见上表）——基建坏了应当尽早炸而非静默。
+- MySQL 首次建立连接时会在 30 秒总超时内按 500 毫秒间隔重试 Ping，用于覆盖 testcontainers 宿主机端口短暂抖动；超时后仍按 fail-loud 契约 panic。
+- 其他后端连接失败一律 **fail-loud panic**（Pulsar 除外，见上表）——基建坏了应当尽早炸而非静默。
 
 ---
 

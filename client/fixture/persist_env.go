@@ -24,6 +24,11 @@ type RedisClient = redis.UniversalClient
 // MongoClient 是 PersistEnv 暴露的 Mongo 客户端类型。
 type MongoClient = *mongo.Client
 
+const (
+	persistEnvMySQLPingTimeout       = 30 * time.Second
+	persistEnvMySQLPingRetryInterval = 500 * time.Millisecond
+)
+
 // PersistEnv 提供测试基础设施连接，连接懒初始化并按 sutEnvKey 在进程内缓存复用。
 // 两类消费者：provision 期的 Resource.Apply，以及测试期直接写/读测试数据的测试代码——两者各持一个实例。
 //
@@ -75,15 +80,38 @@ func (e *PersistEnv) MySQL(sutEnvKey string) *sql.DB {
 	if err != nil {
 		panic(fmt.Sprintf("fixture: open mysql %s: %v", sutEnvKey, err))
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	// sql.Open 不实连，Ping 才能暴露 DSN/网络问题，故必须显式 Ping 一次再缓存。
-	if err := db.PingContext(ctx); err != nil {
+	// 宿主机端口可能在容器首次启动后短暂抖动；复用同一个连接池做有界重试，
+	// 超时后仍按 fail-loud 契约 panic。
+	if err := pingWithRetry(context.Background(), db.PingContext, persistEnvMySQLPingRetryInterval, persistEnvMySQLPingTimeout); err != nil {
 		_ = db.Close()
-		panic(fmt.Sprintf("fixture: ping mysql %s: %v", sutEnvKey, err))
+		panic(fmt.Sprintf("fixture: ping mysql %s after %s: %v", sutEnvKey, persistEnvMySQLPingTimeout, err))
 	}
 	e.mysql[sutEnvKey] = db
 	return db
+}
+
+// pingWithRetry 在 timeout 内按 retryInterval 重试 ping，返回最后一次错误。
+func pingWithRetry(ctx context.Context, ping func(context.Context) error, retryInterval, timeout time.Duration) error {
+	retryCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	for {
+		err := ping(retryCtx)
+		if err == nil {
+			return nil
+		}
+		if retryCtx.Err() != nil {
+			return err
+		}
+
+		timer := time.NewTimer(retryInterval)
+		select {
+		case <-retryCtx.Done():
+			timer.Stop()
+			return err
+		case <-timer.C:
+		}
+	}
 }
 
 // Redis 返回 sutEnvKey 对应的 Redis 客户端（懒建并缓存）。
